@@ -26,7 +26,7 @@ def _load_dotenv(path: Path) -> None:
 _load_dotenv(BACKEND_DIR / ".env")
 _load_dotenv(BASE_DIR / ".env")
 
-DATABASE_URL = f"sqlite:///{DATA_DIR / 'trading.db'}"
+DATABASE_URL = f"sqlite:///{DATA_DIR / 'dashboard.db'}"
 DEFAULT_REFRESH_CRON_HOUR_ET = 17
 DEFAULT_REFRESH_CRON_MINUTE_ET = 10
 FMP_API_KEY = os.getenv("FMP_API_KEY", "").strip()

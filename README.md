@@ -1,15 +1,21 @@
 # Local Stock Tracking and Signal Dashboard
 
-A local-only decision-support dashboard for long-term US stock investing. It tracks a watchlist, fetches free end-of-day data with `yfinance`, stores everything in SQLite, and generates transparent buy/hold/watch/sell-review signals.
+A local-only decision-support dashboard for long-term US stock investing, plus a separate guarded Python trading bot. The dashboard tracks a watchlist, fetches free end-of-day data with `yfinance`, stores everything in SQLite, and generates transparent buy/hold/watch/sell-review signals.
 
-This tool does not connect to a broker and never places trades. Signals are educational decision support, not financial advice.
+Signals are educational decision support, not financial advice. The web dashboard does not connect to a broker and never places trades. Automated IBKR trading, if used, runs only through the standalone Python bot and is disabled by default.
 
 ## Project Layout
 
 - `backend/` - FastAPI app, SQLite models, market data provider, refresh jobs, signal rules, tests.
 - `frontend/` - React + Vite dashboard.
+- `bot/` - Standalone guarded IBKR trading bot with strategy hooks, risk checks, and SQLite audit storage.
 - `data/` - Local SQLite database location and imported demo CSV cache.
 - `reports/` - Ignored local/generated reports and archived demo analysis outputs.
+
+## Local Databases
+
+- `data/dashboard.db` - Web dashboard research data: watchlist, prices, fundamentals, manual holdings, signals, and local AI analyses.
+- `data/ibkr_bot_audit.db` - Standalone IBKR bot audit data: runs, decisions, risk checks, synced positions, submitted orders, and fills.
 
 ## Backend Setup
 
@@ -62,6 +68,69 @@ cd frontend
 npm run build
 ```
 
+## Standalone IBKR Trading Bot
+
+The bot is separate from the web app. It connects to a locally running Interactive Brokers Trader Workstation, runs strategy hooks, checks every proposed order against guardrails, and records decisions, risk checks, submissions, fills, positions, and run heartbeats in its own SQLite database.
+
+### Safety Defaults
+
+Live trading is disabled unless you opt in with bot-specific environment variables:
+
+```bash
+cp bot/.env.example bot/.env
+# edit .env
+BOT_LIVE_TRADING_ENABLED=true
+```
+
+Default bot settings:
+
+```env
+BOT_IBKR_HOST=127.0.0.1
+BOT_IBKR_PORT=7496
+BOT_IBKR_CLIENT_ID=20
+BOT_LIVE_TRADING_ENABLED=false
+BOT_MAX_ORDER_NOTIONAL_USD=500
+BOT_MAX_DAILY_NOTIONAL_USD=2000
+BOT_ALLOW_AFTER_HOURS=false
+BOT_LOOP_INTERVAL_SECONDS=300
+BOT_DB_PATH=data/ibkr_bot_audit.db
+BOT_TICKERS=AAPL,MSFT,SPY
+BOT_STRATEGY=noop
+```
+
+V1 bot guardrails:
+
+- US stocks/ETFs only, modeled as `STK`, `SMART`, `USD`.
+- Limit orders only.
+- Strategies return proposed order intents; only the risk layer can approve submission.
+- Blocks short sells by default using synced IBKR positions.
+- Blocks orders outside regular US market hours unless explicitly configured otherwise.
+- Blocks orders above per-order and daily notional limits.
+- Blocks duplicate same-symbol/same-side orders within the configured cooldown window.
+
+Run commands from the repository root:
+
+```bash
+python -m bot.runner status
+python -m bot.runner once
+python -m bot.runner loop
+```
+
+The default strategy is `noop`. To enable the conservative dip-buy strategy, set `BOT_STRATEGY=conservative_dip`. It uses yfinance daily history for trend/pullback checks and IBKR only for account, position, contract, and order operations.
+
+### TWS Setup
+
+In Trader Workstation:
+
+1. Open `File` -> `Global Configuration` -> `API` -> `Settings`.
+2. Check `Enable ActiveX and Socket Clients`.
+3. Uncheck `Read-Only API` if you want to submit orders.
+4. Use socket port `7496` for live TWS. Paper TWS commonly uses `7497`.
+5. Allow localhost in Trusted IPs. If needed, add both `127.0.0.1` and `::1`, or temporarily clear Trusted IP restrictions while testing locally.
+6. Apply settings and fully restart TWS if the API handshake times out.
+
+If `127.0.0.1:7496` is open but the connection still times out, TWS is accepting the socket but not completing the IB API handshake. Check for TWS popups, locked/login state, Trusted IPs, SSL/API settings, and restart TWS.
+
 ## Common Flow
 
 1. Open the dashboard.
@@ -69,6 +138,14 @@ npm run build
 3. Click `Refresh Now` to fetch latest data.
 4. Add manual holdings and target allocations.
 5. Review signal explanations before making your own decision.
+
+For the standalone IBKR bot:
+
+1. Start and log in to TWS.
+2. Configure `bot/.env`.
+3. Run `python -m bot.runner status` to check connectivity and audit DB state.
+4. Run `python -m bot.runner once` for a single evaluation.
+5. Run `python -m bot.runner loop` only when the strategy hook and guardrails are ready.
 
 ## Demo Assets
 

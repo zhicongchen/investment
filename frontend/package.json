@@ -1,7 +1,7 @@
 {
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build --app",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

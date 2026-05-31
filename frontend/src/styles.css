@@ -13,7 +13,7 @@ body {
   margin: 0;
 }
 
-button, input, textarea {
+button, input, textarea, select {
   font: inherit;
 }
 
@@ -122,7 +122,7 @@ button {
   gap: 10px;
 }
 
-input, textarea {
+input, textarea, select {
   border: 1px solid #c9d3df;
   border-radius: 7px;
   padding: 10px 11px;

@@ -1,0 +1,53 @@
+watchlist:
+  - SPCX
+  - QQQ
+  - SPY
+  - NVDA
+  - TSLA
+  - META
+  - AMZN
+  - AAPL
+  - MSFT
+
+data:
+  period: "7d"
+  interval: "1m"
+  request_delay_seconds: 2.0
+  request_delay_jitter_seconds: 2.0
+
+label:
+  horizon_minutes: 60
+  cost_threshold: 0.0015
+
+model:
+  probability_threshold: 0.55
+  train_days: 10
+  validation_days: 5
+  test_days: 5
+
+portfolio:
+  max_positions: 3
+  max_position_size: 0.30
+  initial_cash: 1.0
+
+costs:
+  commission_rate: 0.0001
+  slippage_rate: 0.0003
+  spread_estimate: 0.0002
+  safety_buffer: 0.0005
+
+risk:
+  daily_loss_limit: 0.01
+  consecutive_loss_limit: 3
+  high_vol_quantile: 0.90
+
+validation:
+  mode: "purged_walk_forward"
+  window_type: "expanding"
+  train_min_days: 3
+  validation_days: 1
+  test_days: 1
+  purge_minutes: 60
+  embargo_minutes: 60
+  dynamic_cost_floor: 0.0005
+  dynamic_k_values: [0.25, 0.5, 0.75, 1.0]

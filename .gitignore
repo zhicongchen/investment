@@ -24,6 +24,7 @@ frontend/.env
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+data/quant/
 
 # Frontend dependencies and build output
 frontend/node_modules/

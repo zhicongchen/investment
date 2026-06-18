@@ -1,0 +1,2 @@
+"""Factor research and reporting."""
+

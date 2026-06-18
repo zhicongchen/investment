@@ -23,7 +23,7 @@ Signals are educational decision support, not financial advice. The web dashboar
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -r requirements.txt
+python3 -m pip install -r ../requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -117,6 +117,103 @@ python -m bot.runner loop
 ```
 
 The default strategy is `noop`. To enable the conservative dip-buy strategy, set `BOT_STRATEGY=conservative_dip`. It uses yfinance daily history for trend/pullback checks and IBKR only for account, position, contract, and order operations.
+
+## Minute-Level Research Quant System
+
+The `quant/` package is a separate Python research system for one-minute US equity analysis. It reads its watchlist and parameters from `quant/config.yaml`, downloads Yahoo Finance 1m bars, builds same-day historical-only features, trains pooled regression and three-class classification models for the next 60 minutes, generates research-only live prediction reports, and runs an event-driven backtest. It does not connect to a broker and does not place orders.
+
+Important assumptions and risks:
+
+- Signals are generated after the `t` minute close and execute at the `t+1` minute open in backtests.
+- Yahoo Finance 1m data has limited history and can return fewer rows than requested. The default `30d` period may need adjustment if Yahoo rejects the range.
+- Yahoo Finance may delay, revise, or omit minute bars and is not suitable for serious live execution.
+- SPCX may have a very short trading history. Short histories and newly listed instruments can cause severe distribution drift.
+- Seven trading days, or any similarly short minute-data window, does not represent many independent samples because adjacent 60-minute labels overlap heavily.
+- Regression predictions require out-of-sample calibration before they can be interpreted as achievable returns.
+- Classification probabilities are model scores, not true calibrated probabilities unless a separate calibration check supports that interpretation.
+- The watchlist is user-selected in `quant/config.yaml`, so universe-selection and survivorship bias still exist.
+- Transaction cost and slippage are modeled, but minute-level fills can differ materially from the backtest assumption.
+- The first version only executes LONG/NO_TRADE signals. Short labels are used for classification but not traded.
+
+Install Python dependencies from the repository root:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Edit the minute-level watchlist and parameters:
+
+```bash
+notepad quant/config.yaml
+```
+
+Download 1m data:
+
+```bash
+python -m quant.cli download-data
+```
+
+Build features, 60-minute labels, and the training dataset:
+
+```bash
+python -m quant.cli build-dataset
+```
+
+Train the walk-forward regression and classification models and save out-of-sample predictions:
+
+```bash
+python -m quant.cli train-model
+```
+
+Evaluate saved out-of-sample predictions by ticker, day, intraday hour, and score buckets:
+
+```bash
+python -m quant.cli evaluate
+```
+
+Generate latest predictions with the saved model:
+
+```bash
+python -m quant.cli predict
+```
+
+Generate a research-only live prediction report for the latest completed SPCX minute bar:
+
+```bash
+python -m quant.cli predict-live --ticker SPCX
+```
+
+Generate a research-only live prediction report for a specific New York time:
+
+```bash
+python -m quant.cli predict-live --ticker SPCX --time "10:30"
+```
+
+Run download, dataset build, walk-forward training, final model training, and evaluation:
+
+```bash
+python -m quant.cli full-train
+```
+
+Generate LONG/NO_TRADE signals:
+
+```bash
+python -m quant.cli generate-signals
+```
+
+Run the event-driven minute-level backtest:
+
+```bash
+python -m quant.cli backtest
+```
+
+Run only the quant test suite:
+
+```bash
+python -m pytest tests/quant
+```
+
+Generated quant data is written under `data/quant/`; generated reports are written under `reports/quant/`. Both are ignored by git. Key outputs include `data/quant/processed/dataset.parquet`, `data/quant/models/regression_model.pkl`, `data/quant/models/classification_model.pkl`, `data/quant/models/preprocessor.pkl`, `data/quant/models/ticker_encoder.pkl`, `data/quant/models/feature_columns.json`, `data/quant/models/model_metadata.json`, `data/quant/predictions/predictions.csv`, `data/quant/predictions/signals.csv`, `reports/quant/live_prediction_*.md`, `reports/quant/live_prediction_*.json`, `reports/quant/trades.csv`, `reports/quant/equity_curve.csv`, `reports/quant/risk_status.csv`, and `reports/quant/metrics.csv`.
 
 ### TWS Setup
 

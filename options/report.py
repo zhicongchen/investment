@@ -105,8 +105,8 @@ def to_markdown(result: ScanResult) -> str:
             lines += [f"- ✔ {text}" for text in item.reasons] + [f"- ⚠ {text}" for text in item.cautions] + [""]
         lines += [
             "_Grade: A ≥ 75, B ≥ 62, C ≥ 50 on premium richness (IV vs realized), probability of profit, distance in "
-            "expected moves, quality and price of the underlying, liquidity; earnings before expiry or no fundamental "
-            "check caps the grade at B. PoP is risk-neutral (from IV)._",
+            "expected moves, quality and price of the underlying, time to expiry (30-45 days best), liquidity; earnings "
+            "before expiry or no fundamental check caps the grade at B. PoP is risk-neutral (from IV)._",
         ]
         if any(item.delta_estimated for item in result.candidates):
             lines.append("`*` delta estimated with Black-Scholes (no greeks from the data source).")

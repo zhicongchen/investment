@@ -8,6 +8,8 @@ Premium yield alone rewards the riskiest contracts. A put is worth selling when:
    strike at least about one expected move (one standard deviation) below spot.
 3. No earnings release lands before expiry (gap risk the premium rarely pays for).
 4. Assignment would buy a business you want, at a price below its estimated fair value.
+5. Time to expiry sits near the usual 30-45 day sweet spot: annualized yield flatters weekly
+   puts, which carry the most gamma risk (a sharp drop moves them against you fastest).
 
 Pure functions over PutCandidate; the scanner supplies realized volatility, the next earnings
 date and the fundamental verdict from the dashboard's financial analysis.
@@ -155,6 +157,9 @@ def evaluate(
     parts.append((quality, 0.25))
 
     parts.append((_scale(item.spread_pct, [(0.02, 95), (0.05, 70), (0.10, 40), (0.20, 10)]), 0.05))
+    parts.append((_scale(item.dte, [(7, 30), (14, 55), (21, 75), (30, 95), (45, 95), (60, 80)]), 0.10))
+    if item.dte < 14:
+        cautions.append(f"Only {item.dte} days to expiry: high gamma risk, a sharp drop moves the put against you quickly")
 
     scored = [(score, weight) for score, weight in parts if score is not None]
     total = sum(score * weight for score, weight in scored) / sum(weight for _, weight in scored) if scored else 0.0

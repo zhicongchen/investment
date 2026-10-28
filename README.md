@@ -19,6 +19,7 @@ Pipeline per scan:
    - **Odds**: probability of finishing above breakeven, and how many expected moves (one standard deviation at the contract's IV) the strike sits below spot.
    - **Event risk**: the next earnings date from Yahoo. Earnings before expiry costs 15 points and caps the grade at B (`edge.earnings: exclude` drops those puts).
    - **The underlying**: the dashboard's financial-analysis verdict and fair value. Puts on stocks rated AVOID or SELL_REVIEW are dropped, a strike at or below the buy-below price scores higher, and the report shows breakeven vs fair value. With `edge.fundamentals: dashboard` this reads `data/dashboard.db` (refresh the dashboard first); `live` downloads statements during the scan; without a verdict the grade is capped at B.
+   - **Time to expiry**: 30-45 days scores best; weekly puts are marked down for gamma risk even though their annualized yield looks high.
    - **Liquidity** (bid/ask spread) and a small bonus for selling into a dip.
    The report lists the reasons and cautions behind each of the top puts.
 6. **Open positions**: short puts from TWS are priced via Moomoo → `TAKE PROFIT` (≥50% credit captured), `ROLL / DEFEND` (spot below strike or delta ≤ −0.50), `CLOSE OR ROLL` (≤7 DTE), else `HOLD`. If TWS is not running the scan still works.

@@ -226,3 +226,12 @@ def test_yahoo_atm_iv_is_solved_from_option_prices():
 
     assert vol.iv is not None and 0.05 < vol.iv < 2.0  # placeholder 0.00001 IV in the chain is never used
     assert vol.hv_30d is not None
+
+
+def test_weekly_puts_score_below_the_same_risk_at_thirty_days():
+    weekly = evaluate(candidate(dte=7, premium=0.55), EdgeConfig(), 0.04, hv=0.25, underlying=QUALITY)
+    monthly = evaluate(candidate(dte=30, premium=1.6), EdgeConfig(), 0.04, hv=0.25, underlying=QUALITY)
+
+    assert weekly.annualized_yield > monthly.annualized_yield * 0.9
+    assert weekly.put_score < monthly.put_score
+    assert any("gamma risk" in caution for caution in weekly.cautions)

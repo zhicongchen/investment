@@ -114,6 +114,16 @@ cd frontend
 npm run build
 ```
 
+### Online Dashboard (GitHub Pages)
+
+`.github/workflows/pages.yml` builds the frontend and publishes it to GitHub Pages on every push to `main` that changes `frontend/`. The page is at `https://zhicongchen.github.io/investment/`.
+
+It is only the user interface. Your data still comes from the backend on your own computer (SQLite, Moomoo OpenD, Ollama), so start the backend before opening the page. The page calls `http://127.0.0.1:8000/api` by default; change it under **Settings → Backend URL**, which is saved in your browser. The backend already allows requests from `https://zhicongchen.github.io`; add more origins with `CORS_ORIGINS` in `backend/.env`.
+
+One-time setup: in the repository on GitHub, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Then push to `main` or run the workflow from the **Actions** tab. GitHub Pages for a private repository needs a paid GitHub plan, and the published site is public. The page holds no data, but anyone with the link can load the interface.
+
+Use Chrome, Edge or Firefox. Chrome may ask whether the site can access devices on your local network; allow it. Safari blocks HTTPS pages from calling `http://127.0.0.1`, so use the local `npm run dev` dashboard there.
+
 ## Standalone IBKR Trading Bot
 
 The bot is separate from the web app. It connects to a locally running Interactive Brokers Trader Workstation, runs strategy hooks, checks every proposed order against guardrails, and records decisions, risk checks, submissions, fills, positions, and run heartbeats in its own SQLite database.

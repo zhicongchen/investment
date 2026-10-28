@@ -537,3 +537,15 @@ dd {
     justify-content: flex-start;
   }
 }
+
+.api-base-form {
+  margin-bottom: 18px;
+}
+
+.api-base-form label {
+  font-weight: 600;
+}
+
+.api-base-form .inline-form {
+  margin-bottom: 0;
+}

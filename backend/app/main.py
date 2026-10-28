@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
-from app.config import DEFAULT_REFRESH_CRON_HOUR_ET, DEFAULT_REFRESH_CRON_MINUTE_ET
+from app.config import CORS_ORIGINS, DEFAULT_REFRESH_CRON_HOUR_ET, DEFAULT_REFRESH_CRON_MINUTE_ET
 from app.db import SessionLocal, init_db
 from app.providers.factory import market_data_provider
 from app.services.refresh import refresh_all
@@ -16,16 +16,20 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Local Stock Tracking Dashboard")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://127.0.0.1:5173",
-            "http://localhost:5173",
-            "http://127.0.0.1:5174",
-            "http://localhost:5174",
-        ],
+        allow_origins=CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def allow_private_network(request: Request, call_next):
+        # Chrome asks before a public page (GitHub Pages) may call a local server.
+        response = await call_next(request)
+        if request.headers.get("access-control-request-private-network") == "true":
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
     app.include_router(router, prefix="/api")
     return app
 

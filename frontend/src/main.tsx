@@ -12,7 +12,18 @@ import {
 } from 'recharts';
 import './styles.css';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api';
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api';
+const API_BASE_STORAGE_KEY = 'apiBase';
+
+function storedApiBase(): string {
+  try {
+    return localStorage.getItem(API_BASE_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+const API_BASE = (storedApiBase() || DEFAULT_API_BASE).replace(/\/+$/, '');
 
 type Signal = {
   date: string;
@@ -209,10 +220,15 @@ type OptionsScan = {
 };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      ...options,
+    });
+  } catch {
+    throw new Error(`Cannot reach the backend at ${API_BASE}. Start it on this computer (uvicorn app.main:app --port 8000) or change the backend URL in Settings.`);
+  }
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -254,6 +270,20 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [error, setError] = useState('');
+  const [apiBaseInput, setApiBaseInput] = useState(API_BASE);
+
+  function saveApiBase(event: React.FormEvent) {
+    event.preventDefault();
+    const value = apiBaseInput.trim().replace(/\/+$/, '');
+    try {
+      if (!value || value === DEFAULT_API_BASE) localStorage.removeItem(API_BASE_STORAGE_KEY);
+      else localStorage.setItem(API_BASE_STORAGE_KEY, value);
+    } catch {
+      setError('Could not save the backend URL: browser storage is unavailable.');
+      return;
+    }
+    window.location.reload();
+  }
 
   async function load() {
     setError('');
@@ -618,6 +648,15 @@ function App() {
         {tab === 'settings' && (
           <section className="panel settings-panel">
             <h3>Local Configuration</h3>
+            <form className="stack-form api-base-form" onSubmit={saveApiBase}>
+              <label htmlFor="api-base">Backend URL</label>
+              <div className="inline-form">
+                <input id="api-base" value={apiBaseInput} onChange={(event) => setApiBaseInput(event.target.value)} placeholder={DEFAULT_API_BASE} />
+                <button className="icon-button" title="Save backend URL">
+                  <Save size={18} />
+                </button>
+              </div>
+            </form>
             <dl>
               <dt>Market</dt><dd>US-listed stocks</dd>
               <dt>Data provider</dt><dd>Moomoo OpenD prices (yfinance when OpenD is offline); yfinance or FMP for sector and extra fundamentals</dd>

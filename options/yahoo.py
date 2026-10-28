@@ -1,10 +1,14 @@
 """Moomoo-compatible market data from Yahoo Finance (yfinance), for scanning without OpenD.
 
-Covers what the scanner needs: snapshots, daily bars, put chains with bid/ask/IV/open interest,
+Covers what the scanner needs: snapshots, daily bars, put chains with bid/ask/open interest,
 an IV overview (at-the-money IV and 30-day realized volatility; Yahoo has no IV rank) and the
 next earnings date. Yahoo option quotes are delayed about 15 minutes; outside market hours
 bid/ask can be empty, in which case the last trade is used and `used_last_trade` is set so the
 report can warn.
+
+Yahoo's own implied volatilities are not used: outside market hours they are placeholders
+(6.25%, 12.5%, ...) that make every put look riskless. IV is solved from the option price
+instead, so delta, probability of profit and IV/RV all match the premium being collected.
 """
 from __future__ import annotations
 
@@ -13,6 +17,9 @@ from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Optional
 
 from options.edge import realized_vol
+from options.pricing import implied_vol
+
+RISK_FREE_RATE = 0.04
 from shared.moomoo import DailyBar, OptionQuote, UnderlyingVol
 
 
@@ -135,7 +142,7 @@ class YahooOptionsClient:
 
     def _atm_iv(self, ticker: str, spot: float, today: date) -> Optional[float]:
         """Average IV of the two puts nearest the money in the expiry closest to 30 days out."""
-        expiries = self._expiries(ticker)
+        expiries = [expiry for expiry in self._expiries(ticker) if expiry > today]
         if not expiries:
             return None
         target = min(expiries, key=lambda expiry: abs((expiry - today).days - 30))
@@ -143,7 +150,15 @@ class YahooOptionsClient:
         if frame is None or frame.empty:
             return None
         rows = sorted(frame.to_dict("records"), key=lambda row: abs((_num(row.get("strike")) or 0) - spot))[:2]
-        ivs = [iv for iv in (_clean_iv(row.get("impliedVolatility")) for row in rows) if iv]
+        years = max((target - today).days, 1) / 365.0
+        ivs = []
+        for row in rows:
+            price = _quote_price(row)
+            strike = _num(row.get("strike"))
+            if price and strike:
+                iv = implied_vol(price, spot, strike, years, RISK_FREE_RATE)
+                if iv:
+                    ivs.append(iv)
         return sum(ivs) / len(ivs) if ivs else None
 
     def _expiries(self, ticker: str) -> list[date]:
@@ -196,7 +211,7 @@ class YahooOptionsClient:
                         bid=bid,
                         ask=ask,
                         last=last,
-                        iv=_clean_iv(row.get("impliedVolatility")),
+                        iv=None,  # solved from the price by the scanner; see module docstring
                         open_interest=_int(row.get("openInterest")),
                         volume=_int(row.get("volume")),
                     )
@@ -207,10 +222,11 @@ class YahooOptionsClient:
         return next_earnings_date(ticker, self._ticker(ticker))
 
 
-def _clean_iv(value: Any) -> Optional[float]:
-    """Yahoo reports placeholder IVs (~0 or several hundred %) for stale contracts; drop those."""
-    iv = _num(value)
-    return iv if iv is not None and 0.03 <= iv <= 4.0 else None
+def _quote_price(row: dict[str, Any]) -> Optional[float]:
+    bid, ask = _num(row.get("bid")), _num(row.get("ask"))
+    if bid and ask and ask >= bid:
+        return (bid + ask) / 2
+    return _num(row.get("lastPrice")) or None
 
 
 def next_earnings_date(ticker: str, stock: Any = None, today: Optional[date] = None) -> Optional[date]:

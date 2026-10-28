@@ -195,9 +195,9 @@ def test_yahoo_client_maps_chains_quotes_and_earnings():
     quotes = {quote.strike: quote for quote in client.option_quotes("TST", codes)}
 
     assert {expiry for _, expiry, _ in codes} == {date(2026, 10, 2), date(2026, 10, 23)}
-    assert quotes[90.0].bid == 0.8 and quotes[90.0].iv == 0.35 and quotes[90.0].open_interest == 500
+    assert quotes[90.0].bid == 0.8 and quotes[90.0].open_interest == 500
     assert quotes[95.0].bid == quotes[95.0].ask == 1.4  # no bid/ask: last trade stands in
-    assert quotes[95.0].iv is None  # placeholder IV dropped
+    assert all(quote.iv is None for quote in quotes.values())  # Yahoo IVs are ignored, solved from price later
     assert client.used_last_trade
     assert client.stock_snapshots(["TST"])["TST"]["last_price"] == 100 + 39 % 3
     assert next_earnings_date("TST", FakeYfTicker("TST"), today=date(2026, 10, 1)) == date(2026, 10, 29)
@@ -216,3 +216,13 @@ def test_store_adds_put_score_columns_to_old_databases(tmp_path):
     with sqlite3.connect(path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(scan_candidates)")}
     assert {"put_score", "grade", "prob_profit", "verdict"} <= columns
+
+
+def test_yahoo_atm_iv_is_solved_from_option_prices():
+    class Upcoming(FakeYfTicker):
+        options = tuple((date.today() + timedelta(days=days)).isoformat() for days in (5, 33, 90))
+
+    vol = YahooOptionsClient(yf=type("Yf", (), {"Ticker": Upcoming})()).underlying_vol(["TST"])["TST"]
+
+    assert vol.iv is not None and 0.05 < vol.iv < 2.0  # placeholder 0.00001 IV in the chain is never used
+    assert vol.hv_30d is not None

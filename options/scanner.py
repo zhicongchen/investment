@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from options.config import IbkrConfig, OptionsConfig
 from options.dips import DipMetrics, evaluate_dip
+from options.edge import Underlying, evaluate, excluded, realized_vol
 from options.positions import PositionAdvice, ShortPut, advise
 from options.puts import PutCandidate, rank_candidates, select_puts
 from shared.moomoo import DailyBar, UnderlyingVol
@@ -30,6 +31,8 @@ class ScanResult:
     rejections: dict[str, Counter[str]] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    underlyings: dict[str, Underlying] = field(default_factory=dict)
+    earnings: dict[str, Optional[date]] = field(default_factory=dict)
 
     @property
     def dipping(self) -> list[DipMetrics]:
@@ -41,7 +44,10 @@ def run_scan(
     client: Any,
     now: Optional[datetime] = None,
     fetch_positions: Optional[Callable[[IbkrConfig], list[ShortPut]]] = None,
+    earnings: Optional[Callable[[str], Optional[date]]] = None,
+    fundamentals: Optional[Callable[[list[str]], dict[str, Underlying]]] = None,
 ) -> ScanResult:
+    """`earnings` returns a ticker's next earnings date; `fundamentals` returns the dashboard verdicts."""
     now = now or datetime.now(ET)
     today = now.date()
     result = ScanResult(generated_at=now, ranking_metric=config.ranking.metric)
@@ -50,24 +56,27 @@ def run_scan(
     snapshots = _safe(result, "stock snapshots", lambda: client.stock_snapshots(result.universe), {})
 
     history_start = today - timedelta(days=_history_calendar_days(config))
+    realized: dict[str, Optional[float]] = {}
     for ticker in result.universe:
         try:
             bars = client.daily_bars(ticker, history_start)
             snap = snapshots.get(ticker, {})
             bars = merge_live_price(bars, snap.get("last_price"), snap.get("update_time"))
             result.dips.append(evaluate_dip(ticker, bars, config.dip, prev_close=snap.get("prev_close")))
+            realized[ticker] = realized_vol([bar.close for bar in bars], config.edge.hv_days)
         except Exception as exc:
             result.errors[ticker] = f"history: {exc}"
     result.dips.sort(key=lambda item: (not item.is_dip, -(item.off_high_pct or 0)))
 
-    dipping = [item.ticker for item in result.dipping]
-    if dipping:
-        result.vols = _safe(result, "IV overview", lambda: client.underlying_vol(dipping), {})
+    targets = result.dipping if config.dip.required else [item for item in result.dips if item.spot > 0]
+    if targets:
+        names = [item.ticker for item in targets]
+        result.vols = _safe(result, "IV overview", lambda: client.underlying_vol(names), {})
 
     all_candidates: list[PutCandidate] = []
     moomoo_delta_seen = False
     quotes_seen = False
-    for metrics in result.dipping:
+    for metrics in targets:
         ticker = metrics.ticker
         try:
             contracts = client.put_chain_codes(
@@ -92,6 +101,8 @@ def run_scan(
             "Moomoo returned option quotes without greeks; delta/IV were estimated with Black-Scholes. "
             "Run `python -m options.cli check` to review your option quote permissions."
         )
+    if config.edge.enabled and all_candidates:
+        all_candidates = _apply_edge(config, result, all_candidates, targets, realized, earnings, fundamentals)
     result.candidates = rank_candidates(all_candidates, config.ranking, config.puts.top_per_ticker)
 
     if config.ibkr.enabled and fetch_positions is not None:
@@ -190,10 +201,49 @@ def _add_positions(
         )
 
 
+def _apply_edge(
+    config: OptionsConfig,
+    result: ScanResult,
+    candidates: list[PutCandidate],
+    targets: list[DipMetrics],
+    realized: dict[str, Optional[float]],
+    earnings: Optional[Callable[[str], Optional[date]]],
+    fundamentals: Optional[Callable[[list[str]], dict[str, Underlying]]],
+) -> list[PutCandidate]:
+    """Score every candidate on premium richness, odds, event risk and the quality of the underlying."""
+    tickers = sorted({item.ticker for item in candidates})
+    if fundamentals is not None:
+        result.underlyings = _safe(result, "fundamental analysis", lambda: fundamentals(tickers), {}) or {}
+    if earnings is not None and config.edge.earnings != "ignore":
+        for ticker in tickers:
+            result.earnings[ticker] = _safe(result, f"{ticker} earnings date", lambda: earnings(ticker), None)
+    dipping = {item.ticker for item in targets if item.is_dip}
+    kept: list[PutCandidate] = []
+    for item in candidates:
+        vol = result.vols.get(item.ticker)
+        # Prefer the data source's realized vol so the score matches the IV/HV shown in the dip table.
+        hv = (vol.hv_30d if vol else None) or realized.get(item.ticker)
+        evaluate(
+            item,
+            config.edge,
+            config.puts.risk_free_rate,
+            hv=hv,
+            earnings=result.earnings.get(item.ticker),
+            underlying=result.underlyings.get(item.ticker),
+            is_dip=item.ticker in dipping,
+        )
+        reason = excluded(item, config.edge)
+        if reason:
+            result.rejections.setdefault(item.ticker, Counter())[reason] += 1
+            continue
+        kept.append(item)
+    return kept
+
+
 def _history_calendar_days(config: OptionsConfig) -> int:
     """Calendar days of history covering the longest trading-day lookback in use."""
     checks = config.dip.checks
-    needed = [checks.off_high.lookback_days, checks.drop_n_days.days + 1, checks.rsi.period * 6]
+    needed = [checks.off_high.lookback_days, checks.drop_n_days.days + 1, checks.rsi.period * 6, config.edge.hv_days + 1]
     if config.dip.require_above_ma.enabled:
         needed.append(config.dip.require_above_ma.days)
     return int((max(needed) + 5) * 1.5) + 10

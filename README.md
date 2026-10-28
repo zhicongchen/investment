@@ -13,8 +13,15 @@ Pipeline per scan:
 1. **Universe**: US stocks/ETFs in your Moomoo watchlist groups (`watchlist.groups`, empty = all groups) plus `extra_tickers`.
 2. **Going down**: daily bars + live snapshot → `% below N-day high`, `N-day return`, `RSI`, `today's move`. Pick which checks count in `dip.checks` and combine them with `dip.rule: any|all`. An optional `require_above_ma` filter skips falling knives.
 3. **Puts**: OTM puts with 7–45 DTE for dipping stocks only, filtered by delta, OTM %, bid, spread and open interest. If Moomoo returns no greeks, delta/IV are estimated with Black-Scholes and marked `*`.
-4. **Ranking** (`ranking.metric`): `annualized_yield` (premium ÷ strike × 365 ÷ DTE), `iv_rank` (from Moomoo's option overview), `iv_hv_ratio` (IV ÷ 30-day HV) or `blend` (weighted percentile of all three). Switch metrics in config to compare them.
-5. **Open positions**: short puts from TWS are priced via Moomoo → `TAKE PROFIT` (≥50% credit captured), `ROLL / DEFEND` (spot below strike or delta ≤ −0.50), `CLOSE OR ROLL` (≤7 DTE), else `HOLD`. If TWS is not running the scan still works.
+4. **Ranking** (`ranking.metric`): `put_score` (default, below), `annualized_yield` (premium ÷ strike × 365 ÷ DTE), `iv_rank` (from Moomoo's option overview), `iv_hv_ratio` (IV ÷ 30-day HV) or `blend` (weighted percentile of all three). Switch metrics in config to compare them.
+5. **Put score and grade** (`ranking.metric: put_score`, settings under `edge`): each put gets a 0-100 score and an A/B/C grade from what decides whether a short put is worth selling:
+   - **Premium richness**: the contract's IV vs 30-day realized volatility (plus IV rank when Moomoo provides it), and the premium's edge over its Black-Scholes value at realized volatility.
+   - **Odds**: probability of finishing above breakeven, and how many expected moves (one standard deviation at the contract's IV) the strike sits below spot.
+   - **Event risk**: the next earnings date from Yahoo. Earnings before expiry costs 15 points and caps the grade at B (`edge.earnings: exclude` drops those puts).
+   - **The underlying**: the dashboard's financial-analysis verdict and fair value. Puts on stocks rated AVOID or SELL_REVIEW are dropped, a strike at or below the buy-below price scores higher, and the report shows breakeven vs fair value. With `edge.fundamentals: dashboard` this reads `data/dashboard.db` (refresh the dashboard first); `live` downloads statements during the scan; without a verdict the grade is capped at B.
+   - **Liquidity** (bid/ask spread) and a small bonus for selling into a dip.
+   The report lists the reasons and cautions behind each of the top puts.
+6. **Open positions**: short puts from TWS are priced via Moomoo → `TAKE PROFIT` (≥50% credit captured), `ROLL / DEFEND` (spot below strike or delta ≤ −0.50), `CLOSE OR ROLL` (≤7 DTE), else `HOLD`. If TWS is not running the scan still works.
 
 Setup: install and log in to [moomoo OpenD](https://www.moomoo.com/download/OpenAPI) (default `127.0.0.1:11111`), then:
 
@@ -28,6 +35,12 @@ python -m options.cli loop         # scan every 30 min during US market hours (C
 python -m options.cli history      # recent scans and their top put
 ```
 
+No OpenD? `--source yahoo` scans Yahoo Finance instead (quotes delayed about 15 minutes, no IV rank; outside market hours the last trade stands in for bid/ask and the report warns). Pass tickers with `--tickers`, and `--all-tickers` to look for puts on every ticker rather than only dipping ones:
+
+```bash
+python -m options.cli scan --source yahoo --tickers AAPL MSFT NVDA META --all-tickers --no-positions --fundamentals live
+```
+
 Options: `--no-positions` skips TWS, `--interval 15` changes the loop period, `--any-time` loops outside market hours, `--refresh-cache` re-downloads daily bars and chain listings, `--config path.yaml` uses another config. All thresholds live in `options/config.yaml`.
 
 Every scan is stored in `data/options.db` (`scans`, `scan_dips`, `scan_candidates`: each ranked put with its yield, IV, IV rank and IV/HV). That history is what you use to compare ranking metrics later, e.g. `SELECT ticker, strike, expiry, annualized_yield, iv_rank FROM scan_candidates WHERE rank <= 5`. The same database holds a per-day cache of daily bars and option-chain listings, so only the first scan of the day pays for those rate-limited requests; later loop iterations only fetch live quotes. `reports/options/latest.*` is rewritten every scan, and a timestamped copy is kept only when the ranked puts or position actions change.
@@ -39,7 +52,8 @@ Notes and limits:
 - OpenD rate-limits option chains (~10 requests / 30 s). Chains are fetched only for dipping stocks, each 7–45 DTE window takes two requests, and listings are cached for the day, so only the first scan with a large dip list takes a few minutes.
 - Daily history counts against Moomoo's 30-day per-stock kline quota; `check` shows what's left.
 - Market hours ignore exchange holidays; on those days the loop just produces unchanged scans.
-- Earnings dates are not checked. Look before selling a put that expires after earnings.
+- Earnings dates come from Yahoo and can be missing or unconfirmed for some tickers; check the date before selling a put across it.
+- Probability of profit is risk-neutral (from implied volatility), not a forecast; realized outcomes depend on the market regime.
 
 Run its tests with `python -m pytest tests/options`.
 

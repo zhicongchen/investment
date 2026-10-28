@@ -64,3 +64,31 @@ jobs:
             backend/analysis.md
             backend/analysis.json
           if-no-files-found: ignore
+
+  put-signals:
+    runs-on: ubuntu-latest
+    env:
+      MARKET_DATA_PROVIDER: yfinance
+      TICKERS: ${{ github.event.inputs.tickers || 'AAPL MSFT NVDA GOOGL AMZN META WMT' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Options tests
+        run: python -m pytest tests/options -q
+      - name: Scan puts to sell on live Yahoo data
+        run: python -m options.cli scan --source yahoo --tickers $TICKERS --all-tickers --no-positions --fundamentals live
+      - name: Publish report to the run summary
+        if: always()
+        run: test -f reports/options/latest.md && cat reports/options/latest.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: put-signals
+          path: |
+            reports/options/latest.md
+            reports/options/latest.json
+          if-no-files-found: ignore

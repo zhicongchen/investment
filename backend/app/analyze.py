@@ -27,7 +27,7 @@ from app.services.refresh import refresh_ticker
 from app.services.research import company_financial_analysis
 
 
-def _session(save: bool) -> Session:
+def open_session(save: bool) -> Session:
     if save:
         init_db()
         return SessionLocal()
@@ -151,7 +151,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     tickers = list(dict.fromkeys(ticker.upper().strip() for ticker in args.tickers))
-    db = _session(args.save)
+    db = open_session(args.save)
     try:
         failed = refresh(db, tickers)
         analyses = [company_financial_analysis(db, ticker) for ticker in tickers if ticker not in failed]

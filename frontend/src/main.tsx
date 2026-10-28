@@ -279,6 +279,19 @@ type PutCandidate = {
   collateral: number;
   contracts: number | null;
   score: number;
+  prob_profit: number | null;
+  strike_sd: number | null;
+  contract_iv_hv: number | null;
+  edge_pct: number | null;
+  earnings_date: string | null;
+  earnings_in_trade: boolean;
+  verdict: string | null;
+  fair_value: number | null;
+  breakeven_discount: number | null;
+  put_score: number | null;
+  grade: string | null;
+  reasons: string[];
+  cautions: string[];
 };
 
 type DipRow = {
@@ -1368,6 +1381,8 @@ function AnalysisPanel({
   );
 }
 
+const GRADE_CLASS: Record<string, string> = { A: 'buy', B: 'hold', C: 'watch', PASS: 'none', AVOID: 'avoid' };
+
 const ADVICE_CLASS: Record<string, string> = {
   'TAKE PROFIT': 'signal buy',
   HOLD: 'signal hold',
@@ -1419,13 +1434,18 @@ function PutSignalsPanel() {
           <table>
             <thead>
               <tr>
-                <th>Contract</th><th>DTE</th><th>Spot</th><th>OTM</th><th>Bid / Ask</th><th>Premium</th>
-                <th>Delta</th><th>IV</th><th>IV rank</th><th>Ann. yield</th><th>Breakeven</th><th>OI</th><th>Held</th>
+                <th>Grade</th><th>Contract</th><th>DTE</th><th>Spot</th><th>OTM</th><th>Bid / Ask</th><th>Premium</th>
+                <th>Delta</th><th>PoP</th><th>IV / RV</th><th>IV rank</th><th>Ann. yield</th><th>Breakeven</th><th>Earnings</th>
+                <th>Verdict</th><th>OI</th><th>Held</th>
               </tr>
             </thead>
             <tbody>
               {scan.candidates.map((put) => (
-                <tr key={put.code}>
+                <tr key={put.code} title={[...put.reasons.map((text) => `+ ${text}`), ...put.cautions.map((text) => `! ${text}`)].join('\n')}>
+                  <td>
+                    <span className={`signal ${GRADE_CLASS[put.grade ?? ''] ?? 'none'}`}>{put.grade ?? '-'}</span>
+                    <span>{num(put.put_score, 0)}</span>
+                  </td>
                   <td><span className="ticker">{put.ticker} {put.strike}P</span><span>{put.expiry}</span></td>
                   <td>{put.dte}</td>
                   <td>{num(put.spot)}</td>
@@ -1433,10 +1453,13 @@ function PutSignalsPanel() {
                   <td>{num(put.bid)} / {num(put.ask)}</td>
                   <td>{num(put.premium)}<span>{money(put.premium * 100)} / ct</span></td>
                   <td>{num(put.delta)}{put.delta_estimated ? '*' : ''}</td>
-                  <td>{pct(put.iv)}</td>
+                  <td>{pct(put.prob_profit)}<span>{num(put.strike_sd, 1)} exp. moves</span></td>
+                  <td>{pct(put.iv)}<span>{put.contract_iv_hv !== null ? `${num(put.contract_iv_hv)}x realized` : ''}</span></td>
                   <td>{num(put.iv_rank, 0)}</td>
                   <td><strong>{pct(put.annualized_yield)}</strong></td>
                   <td>{num(put.breakeven)}<span>{pct(put.cushion_pct)} cushion</span></td>
+                  <td className={put.earnings_in_trade ? 'negative' : ''}>{put.earnings_date ?? '-'}<span>{put.earnings_in_trade ? 'before expiry' : ''}</span></td>
+                  <td>{put.verdict ? <span className={signalClass(put.verdict)}>{actionLabel(put.verdict)}</span> : '-'}<span>{put.breakeven_discount !== null ? `BE ${pct(Math.abs(put.breakeven_discount))} ${put.breakeven_discount >= 0 ? 'below' : 'above'} fair value` : ''}</span></td>
                   <td>{put.open_interest ?? 'n/a'}</td>
                   <td>{scan.exposure[put.ticker] ? `${scan.exposure[put.ticker].contracts} ct` : '-'}</td>
                 </tr>

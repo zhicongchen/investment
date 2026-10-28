@@ -35,6 +35,9 @@ dip:
   require_above_ma:
     enabled: false
     days: 200
+  # true: only look for puts on stocks that are going down. false (or --all-tickers): every
+  # ticker is considered and a dip only adds to the put score.
+  required: true
 
 puts:
   min_dte: 7
@@ -51,13 +54,27 @@ puts:
   top_per_ticker: 3
 
 ranking:
-  # annualized_yield | iv_rank | iv_hv_ratio | blend
-  metric: annualized_yield
+  # put_score | annualized_yield | iv_rank | iv_hv_ratio | blend
+  # put_score (0-100, graded A/B/C) weighs premium richness, odds and the underlying; see `edge`.
+  metric: put_score
   blend_weights:
     annualized_yield: 0.5
     iv_rank: 0.3
     iv_hv_ratio: 0.2
   top_n: 20
+
+# Put scoring. Each candidate gets a probability of profit, its distance in expected moves,
+# implied vs realized volatility (and the premium's edge over its value at realized vol), the
+# next earnings date, and the dashboard's fundamental verdict and fair value for the stock.
+edge:
+  enabled: true
+  earnings: penalize          # earnings before expiry: penalize | exclude | ignore
+  exclude_fundamental_avoid: true   # drop puts on stocks the financial analysis rates AVOID / SELL_REVIEW
+  min_prob_profit: null       # e.g. 0.70 to drop lower-odds puts entirely
+  hv_days: 30                 # realized volatility window when the data source has none
+  # dashboard: verdicts from data/dashboard.db (refresh the dashboard first)
+  # live: download statements for the candidates now (slower) | off
+  fundamentals: dashboard
 
 sizing:
   # Cash-secured collateral cap per trade in USD. null = do not suggest a contract count.

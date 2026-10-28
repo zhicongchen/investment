@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from app.config import FMP_API_KEY
+import logging
+
+from app.config import FMP_API_KEY, MARKET_DATA_PROVIDER, MOOMOO_OPEND_HOST, MOOMOO_OPEND_PORT
 from app.providers.base import CompanyProfile, FundamentalsData, MarketDataProvider, PriceBarData
 from app.providers.fmp_provider import FMPProvider
+from app.providers.moomoo_provider import MoomooProvider
 from app.providers.yfinance_provider import YFinanceProvider
+from shared.moomoo import MoomooClient, is_reachable
+
+logger = logging.getLogger(__name__)
 
 
 class CompositeMarketDataProvider(MarketDataProvider):
@@ -12,7 +18,19 @@ class CompositeMarketDataProvider(MarketDataProvider):
         self.fundamentals = fundamentals
 
     def get_company_profile(self, ticker: str) -> CompanyProfile:
-        return self.prices.get_company_profile(ticker)
+        profile = self.prices.get_company_profile(ticker)
+        if profile.name and profile.name != profile.ticker and profile.sector and profile.exchange:
+            return profile
+        try:
+            extra = self.fundamentals.get_company_profile(ticker)
+        except Exception:
+            return profile
+        return CompanyProfile(
+            ticker=profile.ticker,
+            name=profile.name if profile.name and profile.name != profile.ticker else extra.name or profile.name,
+            sector=profile.sector or extra.sector,
+            exchange=profile.exchange or extra.exchange,
+        )
 
     def get_price_history(self, ticker: str, period: str = "5y") -> list[PriceBarData]:
         return self.prices.get_price_history(ticker, period)
@@ -31,9 +49,25 @@ class CompositeMarketDataProvider(MarketDataProvider):
             dividend_yield=primary.dividend_yield if primary.dividend_yield is not None else fallback.dividend_yield,
         )
 
+    def close(self) -> None:
+        self.prices.close()
+        self.fundamentals.close()
+
 
 def market_data_provider() -> MarketDataProvider:
-    yfinance = YFinanceProvider()
+    """Prices from Moomoo (or yfinance), fundamentals from FMP when keyed, else yfinance."""
+    prices = _price_provider()
     if FMP_API_KEY:
-        return CompositeMarketDataProvider(prices=yfinance, fundamentals=FMPProvider(FMP_API_KEY))
-    return yfinance
+        return CompositeMarketDataProvider(prices=prices, fundamentals=FMPProvider(FMP_API_KEY))
+    if isinstance(prices, MoomooProvider):
+        # Moomoo only covers PE and dividend yield; yfinance fills sector, forward PE, growth, leverage and FCF.
+        return CompositeMarketDataProvider(prices=prices, fundamentals=YFinanceProvider())
+    return prices
+
+
+def _price_provider() -> MarketDataProvider:
+    if MARKET_DATA_PROVIDER == "moomoo":
+        if is_reachable(MOOMOO_OPEND_HOST, MOOMOO_OPEND_PORT, timeout=1):
+            return MoomooProvider(MoomooClient(MOOMOO_OPEND_HOST, MOOMOO_OPEND_PORT))
+        logger.warning("OpenD not reachable at %s:%s; using yfinance for prices", MOOMOO_OPEND_HOST, MOOMOO_OPEND_PORT)
+    return YFinanceProvider()

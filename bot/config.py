@@ -4,26 +4,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from shared.env import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
-
-def _load_dotenv(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-_load_dotenv(BASE_DIR / ".env")
-_load_dotenv(BASE_DIR / "bot" / ".env")
+load_dotenv(BASE_DIR / ".env", BASE_DIR / "bot" / ".env")
 
 
 def _bool(name: str, default: bool = False) -> bool:

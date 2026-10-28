@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Optional
 
 from bot.config import BotConfig
 from bot.types import AccountSnapshot, BrokerStatus, ContractSummary, DailyBar, Fill, MarketSnapshot, OrderIntent, Position, SubmitResult
+from shared import ibkr
 
 try:
     from ib_async import IB, LimitOrder, StartupFetchNONE, Stock
@@ -23,22 +23,22 @@ class IbkrClient:
         self.last_message = ""
 
     def connect(self) -> BrokerStatus:
-        _ensure_event_loop()
+        ibkr.ensure_event_loop()
         if self._ib is None:
             self.last_message = "ib_async is not installed"
             return self.status()
         if not self._ib.isConnected():
             try:
-                self._ib.connect(
+                ibkr.connect(
+                    self._ib,
                     self.config.ibkr_host,
                     self.config.ibkr_port,
-                    clientId=self.config.ibkr_client_id,
+                    self.config.ibkr_client_id,
                     readonly=not self.config.live_trading_enabled,
-                    timeout=15,
                     fetchFields=StartupFetchNONE,
                 )
             except Exception as exc:
-                self.last_message = _error_message(exc)
+                self.last_message = ibkr.error_message(exc)
                 return self.status()
         accounts = self._ib.managedAccounts()
         self.account = accounts[0] if accounts else self.account
@@ -53,7 +53,7 @@ class IbkrClient:
         return BrokerStatus(connected=bool(self._ib is not None and self._ib.isConnected()), message=self.last_message)
 
     def account_summary(self) -> AccountSnapshot | None:
-        _ensure_event_loop()
+        ibkr.ensure_event_loop()
         if not self.status().connected:
             return None
         account = self.account or (self._ib.managedAccounts()[0] if self._ib.managedAccounts() else "")
@@ -70,7 +70,7 @@ class IbkrClient:
         )
 
     def positions(self) -> list[Position]:
-        _ensure_event_loop()
+        ibkr.ensure_event_loop()
         if not self.status().connected:
             return []
         results: list[Position] = []
@@ -92,7 +92,7 @@ class IbkrClient:
         return results
 
     def qualify_stock(self, ticker: str) -> ContractSummary:
-        _ensure_event_loop()
+        ibkr.ensure_event_loop()
         if not self.status().connected:
             raise RuntimeError("TWS is not connected")
         if Stock is None:
@@ -144,7 +144,7 @@ class IbkrClient:
         return history
 
     def place_limit_order(self, intent: OrderIntent) -> SubmitResult:
-        _ensure_event_loop()
+        ibkr.ensure_event_loop()
         if not self.status().connected:
             raise RuntimeError("TWS is not connected")
         if Stock is None or LimitOrder is None:
@@ -169,13 +169,6 @@ class IbkrClient:
         return []
 
 
-def _ensure_event_loop() -> None:
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
-
-
 def _optional_float(value: object) -> Optional[float]:
     try:
         if value in {None, ""}:
@@ -183,8 +176,3 @@ def _optional_float(value: object) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _error_message(exc: Exception) -> str:
-    message = str(exc).strip()
-    return message or exc.__class__.__name__

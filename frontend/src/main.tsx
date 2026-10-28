@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, BarChart3, BrainCircuit, BriefcaseBusiness, Cpu, GitCompare, Plus, RefreshCw, Save, Settings, Trash2 } from 'lucide-react';
+import { Activity, BarChart3, BrainCircuit, BriefcaseBusiness, Cpu, GitCompare, Plus, RefreshCw, Save, Settings, Trash2, TrendingDown } from 'lucide-react';
 import {
   CartesianGrid,
   Line,
@@ -144,7 +144,69 @@ type OllamaAnalysis = {
   created_at: string;
 };
 
-type Tab = 'dashboard' | 'holdings' | 'compare' | 'settings';
+type Tab = 'dashboard' | 'puts' | 'holdings' | 'compare' | 'settings';
+
+type PutCandidate = {
+  ticker: string;
+  code: string;
+  expiry: string;
+  dte: number;
+  strike: number;
+  spot: number;
+  bid: number;
+  ask: number;
+  premium: number;
+  delta: number | null;
+  delta_estimated: boolean;
+  iv: number | null;
+  iv_rank: number | null;
+  open_interest: number | null;
+  otm_pct: number;
+  annualized_yield: number;
+  breakeven: number;
+  cushion_pct: number;
+  collateral: number;
+  contracts: number | null;
+  score: number;
+};
+
+type DipRow = {
+  ticker: string;
+  spot: number;
+  day_change_pct: number | null;
+  off_high_pct: number | null;
+  n_day_return_pct: number | null;
+  rsi: number | null;
+  triggers: string[];
+  blocked_by: string[];
+  is_dip: boolean;
+};
+
+type PositionAdviceRow = {
+  position: { ticker: string; expiry: string; strike: number; contracts: number; entry_credit: number };
+  dte: number;
+  spot: number | null;
+  option_mid: number | null;
+  delta: number | null;
+  profit_pct: number | null;
+  unrealized_pnl: number | null;
+  action: string;
+  reasons: string[];
+};
+
+type OptionsScan = {
+  generated_at: string;
+  ranking_metric: string;
+  universe: string[];
+  dips: DipRow[];
+  candidates: PutCandidate[];
+  vols: Record<string, { iv: number | null; iv_rank: number | null; iv_hv_ratio: number | null }>;
+  positions_status: string;
+  positions: PositionAdviceRow[];
+  exposure: Record<string, { contracts: number; collateral: number }>;
+  errors: Record<string, string>;
+  warnings: string[];
+};
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -402,6 +464,9 @@ function App() {
         <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}>
           <Activity size={18} /> Dashboard
         </button>
+        <button className={tab === 'puts' ? 'nav active' : 'nav'} onClick={() => setTab('puts')}>
+          <TrendingDown size={18} /> Put Signals
+        </button>
         <button className={tab === 'holdings' ? 'nav active' : 'nav'} onClick={() => setTab('holdings')}>
           <BriefcaseBusiness size={18} /> Holdings
         </button>
@@ -416,13 +481,17 @@ function App() {
       <section className="content">
         <header className="topbar">
           <div>
-            <h2>{tab === 'dashboard' ? 'Watchlist Overview' : tab === 'holdings' ? 'Manual Holdings' : tab === 'compare' ? 'Market Comparison' : 'Settings'}</h2>
+            <h2>{tab === 'dashboard' ? 'Watchlist Overview' : tab === 'puts' ? 'Put-Selling Signals' : tab === 'holdings' ? 'Manual Holdings' : tab === 'compare' ? 'Market Comparison' : 'Settings'}</h2>
             <p>No broker connection. No trade execution. Review each signal before acting.</p>
           </div>
-          <button className="primary" onClick={() => refresh()} disabled={busy || watchlist.length === 0}>
-            <RefreshCw size={17} /> Refresh Now
-          </button>
+          {tab !== 'puts' && (
+            <button className="primary" onClick={() => refresh()} disabled={busy || watchlist.length === 0}>
+              <RefreshCw size={17} /> Refresh Now
+            </button>
+          )}
         </header>
+
+        {tab === 'puts' && <PutSignalsPanel />}
 
         {error && <div className="alert">{error}</div>}
         {staleCount > 0 && <div className="notice">{staleCount} ticker(s) have stale or missing data.</div>}
@@ -551,7 +620,7 @@ function App() {
             <h3>Local Configuration</h3>
             <dl>
               <dt>Market</dt><dd>US-listed stocks</dd>
-              <dt>Data provider</dt><dd>Free-first `yfinance` provider behind an interchangeable backend interface</dd>
+              <dt>Data provider</dt><dd>Moomoo OpenD prices (yfinance when OpenD is offline); yfinance or FMP for sector and extra fundamentals</dd>
               <dt>Refresh schedule</dt><dd>Daily at 5:10 PM US/Eastern while the backend is running</dd>
               <dt>Signal posture</dt><dd>Balanced long-term scoring using valuation, quality, growth, trend, and portfolio fit</dd>
               <dt>Execution</dt><dd>Signals only. This app never places trades.</dd>
@@ -916,6 +985,134 @@ function AnalysisPanel({
         <p className="empty">{empty}</p>
       )}
       {analyses.length > 1 && <p className="history-note">{analyses.length - 1} earlier analysis item(s) saved.</p>}
+    </div>
+  );
+}
+
+const ADVICE_CLASS: Record<string, string> = {
+  'TAKE PROFIT': 'signal buy',
+  HOLD: 'signal hold',
+  'CLOSE OR ROLL': 'signal watch',
+  'ROLL / DEFEND': 'signal sell-review',
+};
+
+function PutSignalsPanel() {
+  const [scan, setScan] = useState<OptionsScan | null>(null);
+  const [error, setError] = useState('');
+
+  async function load() {
+    try {
+      setScan(await request<OptionsScan>('/options/latest'));
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(load, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  if (!scan) {
+    return <section className="panel">{error ? <div className="alert">{error}</div> : <p className="empty">Loading latest scan…</p>}</section>;
+  }
+
+  const dipping = scan.dips.filter((row) => row.is_dip);
+  const errors = Object.entries(scan.errors);
+  return (
+    <div className="grid">
+      {error && <div className="alert">{error}</div>}
+      {scan.warnings.map((warning) => <div className="notice" key={warning}>{warning}</div>)}
+      <section className="panel wide">
+        <div className="section-head">
+          <h4>Top puts to sell</h4>
+          <span>
+            {new Date(scan.generated_at).toLocaleString()} · {scan.universe.length} scanned · {dipping.length} going down · ranked by {scan.ranking_metric}
+            {' '}
+            <button className="ghost" onClick={load} title="Reload latest scan"><RefreshCw size={14} /></button>
+          </span>
+        </div>
+        {scan.candidates.length === 0 ? (
+          <p className="empty">No puts passed the filters in the latest scan.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Contract</th><th>DTE</th><th>Spot</th><th>OTM</th><th>Bid / Ask</th><th>Premium</th>
+                <th>Delta</th><th>IV</th><th>IV rank</th><th>Ann. yield</th><th>Breakeven</th><th>OI</th><th>Held</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scan.candidates.map((put) => (
+                <tr key={put.code}>
+                  <td><span className="ticker">{put.ticker} {put.strike}P</span><span>{put.expiry}</span></td>
+                  <td>{put.dte}</td>
+                  <td>{num(put.spot)}</td>
+                  <td>{pct(put.otm_pct)}</td>
+                  <td>{num(put.bid)} / {num(put.ask)}</td>
+                  <td>{num(put.premium)}<span>{money(put.premium * 100)} / ct</span></td>
+                  <td>{num(put.delta)}{put.delta_estimated ? '*' : ''}</td>
+                  <td>{pct(put.iv)}</td>
+                  <td>{num(put.iv_rank, 0)}</td>
+                  <td><strong>{pct(put.annualized_yield)}</strong></td>
+                  <td>{num(put.breakeven)}<span>{pct(put.cushion_pct)} cushion</span></td>
+                  <td>{put.open_interest ?? 'n/a'}</td>
+                  <td>{scan.exposure[put.ticker] ? `${scan.exposure[put.ticker].contracts} ct` : '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="section-head"><h4>Open short puts (IBKR)</h4><span>{scan.positions_status}</span></div>
+        {scan.positions.length === 0 ? (
+          <p className="empty">No open short puts reported.</p>
+        ) : (
+          <table className="mini-table">
+            <thead><tr><th>Action</th><th>Contract</th><th>DTE</th><th>Credit → Now</th><th>Profit</th><th>Spot</th></tr></thead>
+            <tbody>
+              {scan.positions.map((row) => (
+                <tr key={`${row.position.ticker}-${row.position.expiry}-${row.position.strike}`}>
+                  <td><span className={ADVICE_CLASS[row.action] ?? 'signal'}>{row.action}</span><span>{row.reasons.join('; ')}</span></td>
+                  <td><span className="ticker">{row.position.ticker} {row.position.strike}P ×{row.position.contracts}</span><span>{row.position.expiry}</span></td>
+                  <td>{row.dte}</td>
+                  <td>{num(row.position.entry_credit)} → {num(row.option_mid)}</td>
+                  <td>{pct(row.profit_pct)}<span>{money(row.unrealized_pnl)}</span></td>
+                  <td>{num(row.spot)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="section-head"><h4>Stocks going down</h4><span>{dipping.length} of {scan.dips.length}</span></div>
+        {dipping.length === 0 ? (
+          <p className="empty">None of the watchlist met the dip rule.</p>
+        ) : (
+          <table className="mini-table">
+            <thead><tr><th>Ticker</th><th>Spot</th><th>Today</th><th>Off high</th><th>N-day</th><th>IV rank</th></tr></thead>
+            <tbody>
+              {dipping.map((row) => (
+                <tr key={row.ticker}>
+                  <td><span className="ticker">{row.ticker}</span><span>{row.triggers.join('; ')}</span></td>
+                  <td>{num(row.spot)}</td>
+                  <td className={(row.day_change_pct ?? 0) < 0 ? 'negative' : 'positive'}>{pct(row.day_change_pct)}</td>
+                  <td>{pct(row.off_high_pct)}</td>
+                  <td>{pct(row.n_day_return_pct)}</td>
+                  <td>{num(scan.vols[row.ticker]?.iv_rank, 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {errors.length > 0 && <p className="history-note">{errors.length} ticker(s) had data errors: {errors.map(([ticker]) => ticker).join(', ')}</p>}
+      </section>
     </div>
   );
 }

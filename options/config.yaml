@@ -1,0 +1,90 @@
+# Put-selling signal scanner settings.
+# Signals are research output only. Nothing here places orders.
+
+opend:
+  host: 127.0.0.1
+  port: 11111
+
+watchlist:
+  # Moomoo watchlist group names to scan. Empty list = every group.
+  # Run `python -m options.cli groups` to see your group names.
+  groups: []
+  extra_tickers: []      # always scanned, e.g. [SPY, QQQ]
+  exclude_tickers: []
+
+# Which stocks count as "going down". Enabled checks are combined with `rule`.
+dip:
+  rule: any              # any | all
+  checks:
+    off_high:            # close is X% below the N-day high
+      enabled: true
+      lookback_days: 20
+      min_pct: 0.10
+    drop_n_days:         # N-day return is at most -X%
+      enabled: true
+      days: 5
+      min_pct: 0.05
+    rsi:                 # RSI(period) at or below max
+      enabled: false
+      period: 14
+      max: 35
+    day_drop:            # today's move is at most -X%
+      enabled: false
+      min_pct: 0.03
+  # Optional guard against falling knives: require price above the N-day MA.
+  require_above_ma:
+    enabled: false
+    days: 200
+
+puts:
+  min_dte: 7
+  max_dte: 45
+  delta_min: -0.35       # most negative delta allowed
+  delta_max: -0.15       # least negative delta allowed
+  min_otm_pct: 0.0       # strike at least X% below spot
+  max_otm_pct: 0.30      # skip strikes deeper than this before requesting quotes
+  min_open_interest: 100
+  min_bid: 0.10
+  max_spread_pct: 0.10   # (ask - bid) / mid
+  price_basis: mid       # premium assumed received: mid | bid
+  risk_free_rate: 0.04   # only used when Moomoo returns no greeks/IV
+  top_per_ticker: 3
+
+ranking:
+  # annualized_yield | iv_rank | iv_hv_ratio | blend
+  metric: annualized_yield
+  blend_weights:
+    annualized_yield: 0.5
+    iv_rank: 0.3
+    iv_hv_ratio: 0.2
+  top_n: 20
+
+sizing:
+  # Cash-secured collateral cap per trade in USD. null = do not suggest a contract count.
+  max_collateral_per_trade: null
+
+management:
+  take_profit_pct: 0.50  # buy back once this share of the credit is captured
+  near_expiry_dte: 7
+  tested_delta: -0.50    # delta at or below this counts as tested
+
+ibkr:
+  enabled: true
+  host: 127.0.0.1
+  port: 7496
+  client_id: 31
+
+loop:
+  interval_minutes: 30
+  market_hours_only: true
+
+report:
+  # latest.md/latest.json are rewritten every scan; a timestamped copy is kept only
+  # when the ranked puts or position actions change.
+  dir: reports/options
+
+storage:
+  # Scan history (every scan, dip and ranked put) plus a per-day cache of daily bars
+  # and option-chain listings, which only change once a day.
+  path: data/options.db
+  cache_enabled: true

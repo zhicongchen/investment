@@ -49,3 +49,6 @@ class MarketDataProvider(ABC):
     @abstractmethod
     def get_fundamentals(self, ticker: str) -> FundamentalsData:
         raise NotImplementedError
+
+    def close(self) -> None:
+        """Release connections held by the provider."""

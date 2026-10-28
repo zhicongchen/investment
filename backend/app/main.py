@@ -36,9 +36,11 @@ scheduler = BackgroundScheduler(timezone="US/Eastern")
 
 def scheduled_refresh() -> None:
     db = SessionLocal()
+    provider = market_data_provider()
     try:
-        refresh_all(db, market_data_provider())
+        refresh_all(db, provider)
     finally:
+        provider.close()
         db.close()
 
 

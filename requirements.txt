@@ -6,6 +6,7 @@ pydantic==2.10.4
 APScheduler==3.11.0
 httpx==0.28.1
 ib_async==1.0.3
+moomoo-api>=10.0
 
 # Shared market data
 yfinance==0.2.51

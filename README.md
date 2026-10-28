@@ -1,11 +1,52 @@
 # Local Stock Tracking and Signal Dashboard
 
-A local-only decision-support dashboard for long-term US stock investing, plus a separate guarded Python trading bot. The dashboard tracks a watchlist, fetches free end-of-day data with `yfinance`, stores everything in SQLite, and generates transparent buy/hold/watch/sell-review signals.
+A local-only decision-support dashboard for long-term US stock investing, plus a separate guarded Python trading bot. The dashboard tracks a watchlist, fetches end-of-day data from Moomoo OpenD (falling back to `yfinance`), stores everything in SQLite, and generates transparent buy/hold/watch/sell-review signals.
 
 Signals are educational decision support, not financial advice. The web dashboard does not connect to a broker and never places trades. Automated IBKR trading, if used, runs only through the standalone Python bot and is disabled by default.
 
+## Put-Selling Signals (primary workflow)
+
+The `options/` package scans your Moomoo watchlist for stocks that are going down, pulls their put chains from Moomoo OpenD, and ranks the richest out-of-the-money puts to sell. It also reads your open short puts from IBKR TWS (read-only) and says whether to take profit, roll or hold. It only produces signals; you place trades yourself.
+
+Pipeline per scan:
+
+1. **Universe**: US stocks/ETFs in your Moomoo watchlist groups (`watchlist.groups`, empty = all groups) plus `extra_tickers`.
+2. **Going down**: daily bars + live snapshot → `% below N-day high`, `N-day return`, `RSI`, `today's move`. Pick which checks count in `dip.checks` and combine them with `dip.rule: any|all`. An optional `require_above_ma` filter skips falling knives.
+3. **Puts**: OTM puts with 7–45 DTE for dipping stocks only, filtered by delta, OTM %, bid, spread and open interest. If Moomoo returns no greeks, delta/IV are estimated with Black-Scholes and marked `*`.
+4. **Ranking** (`ranking.metric`): `annualized_yield` (premium ÷ strike × 365 ÷ DTE), `iv_rank` (from Moomoo's option overview), `iv_hv_ratio` (IV ÷ 30-day HV) or `blend` (weighted percentile of all three). Switch metrics in config to compare them.
+5. **Open positions**: short puts from TWS are priced via Moomoo → `TAKE PROFIT` (≥50% credit captured), `ROLL / DEFEND` (spot below strike or delta ≤ −0.50), `CLOSE OR ROLL` (≤7 DTE), else `HOLD`. If TWS is not running the scan still works.
+
+Setup: install and log in to [moomoo OpenD](https://www.moomoo.com/download/OpenAPI) (default `127.0.0.1:11111`), then:
+
+```bash
+python -m pip install -r requirements.txt
+python -m options.cli check        # OpenD login, kline quota, option quote/greeks permission, TWS
+python -m options.cli groups       # your watchlist group names -> options/config.yaml
+python -m options.cli scan         # one scan -> reports/options/latest.md + latest.json
+python -m options.cli positions    # only the IBKR short-put advice
+python -m options.cli loop         # scan every 30 min during US market hours (Ctrl+C to stop)
+python -m options.cli history      # recent scans and their top put
+```
+
+Options: `--no-positions` skips TWS, `--interval 15` changes the loop period, `--any-time` loops outside market hours, `--refresh-cache` re-downloads daily bars and chain listings, `--config path.yaml` uses another config. All thresholds live in `options/config.yaml`.
+
+Every scan is stored in `data/options.db` (`scans`, `scan_dips`, `scan_candidates`: each ranked put with its yield, IV, IV rank and IV/HV). That history is what you use to compare ranking metrics later, e.g. `SELECT ticker, strike, expiry, annualized_yield, iv_rank FROM scan_candidates WHERE rank <= 5`. The same database holds a per-day cache of daily bars and option-chain listings, so only the first scan of the day pays for those rate-limited requests; later loop iterations only fetch live quotes. `reports/options/latest.*` is rewritten every scan, and a timestamped copy is kept only when the ranked puts or position actions change.
+
+The dashboard's **Put Signals** tab shows `reports/options/latest.json` and reloads every minute while the backend is running.
+
+Notes and limits:
+
+- OpenD rate-limits option chains (~10 requests / 30 s). Chains are fetched only for dipping stocks, each 7–45 DTE window takes two requests, and listings are cached for the day, so only the first scan with a large dip list takes a few minutes.
+- Daily history counts against Moomoo's 30-day per-stock kline quota; `check` shows what's left.
+- Market hours ignore exchange holidays; on those days the loop just produces unchanged scans.
+- Earnings dates are not checked. Look before selling a put that expires after earnings.
+
+Run its tests with `python -m pytest tests/options`.
+
 ## Project Layout
 
+- `options/` - Moomoo put-selling signal scanner (dip detection, put ranking, IBKR short-put advice, reports, scan history).
+- `shared/` - Code used by several packages: the Moomoo OpenD client, IBKR connection helpers, `.env` loading.
 - `backend/` - FastAPI app, SQLite models, market data provider, refresh jobs, signal rules, tests.
 - `frontend/` - React + Vite dashboard.
 - `bot/` - Standalone guarded IBKR trading bot with strategy hooks, risk checks, and SQLite audit storage.
@@ -15,6 +56,7 @@ Signals are educational decision support, not financial advice. The web dashboar
 ## Local Databases
 
 - `data/dashboard.db` - Web dashboard research data: watchlist, prices, fundamentals, manual holdings, signals, and local AI analyses.
+- `data/options.db` - Put-selling scan history plus the scanner's per-day market data cache.
 - `data/ibkr_bot_audit.db` - Standalone IBKR bot audit data: runs, decisions, risk checks, synced positions, submitted orders, and fills.
 
 ## Backend Setup
@@ -36,9 +78,13 @@ cd backend
 python3 -m pytest
 ```
 
+### Market Data Provider
+
+Dashboard prices come from Moomoo OpenD (`MARKET_DATA_PROVIDER=moomoo`, the default), the same source as the put scanner: raw OHLCV plus forward-adjusted closes, company name/exchange, trailing PE and dividend yield. Moomoo has no sector, forward PE, growth, leverage or free-cash-flow data, so those still come from `yfinance` (or FMP, below). If OpenD is not running when a refresh starts, that refresh uses `yfinance` for everything. Set `MARKET_DATA_PROVIDER=yfinance` in `backend/.env` to skip Moomoo, and `MOOMOO_OPEND_HOST` / `MOOMOO_OPEND_PORT` if OpenD is not on `127.0.0.1:11111`.
+
 ### Optional Fundamentals Provider
 
-Price history and company profiles use `yfinance` by default. For more reliable fundamentals, set a Financial Modeling Prep API key before starting the backend:
+Without Moomoo, price history and company profiles use `yfinance`. For more reliable fundamentals, set a Financial Modeling Prep API key before starting the backend:
 
 ```bash
 cd backend
@@ -47,7 +93,7 @@ cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-When `FMP_API_KEY` is present, refreshes continue to use `yfinance` for prices and use Financial Modeling Prep for PE, forward PE, growth, debt-to-equity, free cash flow, and dividend yield. Without a key, the app keeps the existing `yfinance` fundamentals fallback. You can also edit fundamentals manually from the selected company panel.
+When `FMP_API_KEY` is present, refreshes keep the price provider above and use Financial Modeling Prep for PE, forward PE, growth, debt-to-equity, free cash flow, and dividend yield. Without a key, the app keeps the existing `yfinance` fundamentals fallback. You can also edit fundamentals manually from the selected company panel.
 
 ## Frontend Setup
 

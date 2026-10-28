@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -8,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import OPTIONS_REPORT_DIR
 from app.db import get_db
 from app.models import Company, FundamentalsSnapshot, Holding, PriceBar, Signal
 from app.providers.factory import market_data_provider
@@ -153,19 +155,26 @@ def deactivate_company(ticker: str, db: Session = Depends(get_db)) -> dict[str, 
 
 @router.post("/refresh", response_model=RefreshResult)
 def refresh_watchlist(db: Session = Depends(get_db)) -> RefreshResult:
-    refreshed, failed = refresh_all(db, market_data_provider())
+    provider = market_data_provider()
+    try:
+        refreshed, failed = refresh_all(db, provider)
+    finally:
+        provider.close()
     return RefreshResult(refreshed=refreshed, failed=failed)
 
 
 @router.post("/refresh/{ticker}", response_model=RefreshResult)
 def refresh_single(ticker: str, db: Session = Depends(get_db)) -> RefreshResult:
     symbol = ticker.upper()
+    provider = market_data_provider()
     try:
-        refresh_ticker(db, symbol, market_data_provider())
+        refresh_ticker(db, symbol, provider)
         db.commit()
     except Exception as exc:
         db.rollback()
         return RefreshResult(refreshed=[], failed={symbol: str(exc)})
+    finally:
+        provider.close()
     return RefreshResult(refreshed=[symbol], failed={})
 
 
@@ -317,3 +326,12 @@ def create_portfolio_ollama_analysis(db: Session = Depends(get_db)) -> OllamaAna
 @router.get("/ollama/analyze/portfolio", response_model=list[OllamaAnalysisRead])
 def list_portfolio_ollama_analyses(db: Session = Depends(get_db)) -> list[OllamaAnalysisRead]:
     return [OllamaAnalysisRead.model_validate(item) for item in analysis_history(db, "portfolio")]
+
+
+@router.get("/options/latest")
+def latest_options_scan() -> dict:
+    """Latest put-selling scan written by `python -m options.cli scan|loop`."""
+    path = OPTIONS_REPORT_DIR / "latest.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No put-selling scan yet. Run: python -m options.cli scan")
+    return json.loads(path.read_text(encoding="utf-8"))

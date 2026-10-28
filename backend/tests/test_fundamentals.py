@@ -120,6 +120,7 @@ def test_fmp_provider_maps_stable_endpoint_payloads(monkeypatch):
 
 
 def test_market_data_provider_uses_yfinance_without_fmp_key(monkeypatch):
+    monkeypatch.setattr("app.providers.factory.MARKET_DATA_PROVIDER", "yfinance")
     monkeypatch.setattr("app.providers.factory.FMP_API_KEY", "")
 
     provider = market_data_provider()
@@ -128,6 +129,7 @@ def test_market_data_provider_uses_yfinance_without_fmp_key(monkeypatch):
 
 
 def test_market_data_provider_composes_fmp_with_key(monkeypatch):
+    monkeypatch.setattr("app.providers.factory.MARKET_DATA_PROVIDER", "yfinance")
     monkeypatch.setattr("app.providers.factory.FMP_API_KEY", "demo")
 
     provider = market_data_provider()

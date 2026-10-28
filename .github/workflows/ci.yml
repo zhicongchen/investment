@@ -80,7 +80,9 @@ jobs:
       - name: Options tests
         run: python -m pytest tests/options -q
       - name: Scan puts to sell on live Yahoo data
-        run: python -m options.cli scan --source yahoo --tickers $TICKERS --all-tickers --no-positions --fundamentals live
+        run: |
+          python -m options.cli scan --source yahoo --tickers $TICKERS --all-tickers --no-positions --fundamentals live
+          cat reports/options/latest.md
       - name: Publish report to the run summary
         if: always()
         run: test -f reports/options/latest.md && cat reports/options/latest.md >> "$GITHUB_STEP_SUMMARY" || true

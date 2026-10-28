@@ -98,8 +98,8 @@ def run_scan(
         all_candidates.extend(candidates)
     if quotes_seen and not moomoo_delta_seen:
         result.warnings.append(
-            "Moomoo returned option quotes without greeks; delta/IV were estimated with Black-Scholes. "
-            "Run `python -m options.cli check` to review your option quote permissions."
+            "Option quotes came without greeks; delta was estimated with Black-Scholes. With Moomoo, run "
+            "`python -m options.cli check` to review your option quote permissions."
         )
     if config.edge.enabled and all_candidates:
         all_candidates = _apply_edge(config, result, all_candidates, targets, realized, earnings, fundamentals)

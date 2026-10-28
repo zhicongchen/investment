@@ -100,7 +100,7 @@ def to_markdown(result: ScanResult) -> str:
     if result.candidates and graded:
         lines += _graded_table(result, score_label)
         lines += ["", "### Why these puts", ""]
-        for index, item in enumerate(result.candidates[:8], 1):
+        for index, item in enumerate(result.candidates[:12], 1):
             lines.append(f"**{index}. {item.ticker} {item.strike:g}P {item.expiry:%Y-%m-%d}** — grade {item.grade}, score {_num(item.put_score, 0)}")
             lines += [f"- ✔ {text}" for text in item.reasons] + [f"- ⚠ {text}" for text in item.cautions] + [""]
         lines += [

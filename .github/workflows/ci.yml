@@ -7,7 +7,7 @@ on:
     inputs:
       tickers:
         description: "Tickers for the live financial analysis (space separated)"
-        default: "AAPL MSFT NVDA GOOGL AMZN META WMT"
+        default: "GOOGL MSFT AMZN INTC"
 
 jobs:
   backend-tests:
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MARKET_DATA_PROVIDER: yfinance
-      TICKERS: ${{ github.event.inputs.tickers || 'AAPL MSFT NVDA GOOGL AMZN META WMT' }}
+      TICKERS: ${{ github.event.inputs.tickers || 'GOOGL MSFT AMZN INTC' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       MARKET_DATA_PROVIDER: yfinance
-      TICKERS: ${{ github.event.inputs.tickers || 'AAPL MSFT NVDA GOOGL AMZN META WMT' }}
+      TICKERS: ${{ github.event.inputs.tickers || 'GOOGL MSFT AMZN INTC' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

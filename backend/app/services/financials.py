@@ -719,7 +719,8 @@ def analyze_company(
     debt_to_equity = _positive_div(empty["total_debt"], empty["shareholders_equity"])
     net_debt_to_ebitda = _positive_div(net_debt, empty["ebitda"])
     interest_coverage = _positive_div(empty["operating_income"], empty["interest_expense"]) if (empty["interest_expense"] or 0) > 0 else None
-    negligible_interest = (empty["interest_expense"] or 0) <= 0 and (_positive_div(empty["total_debt"] or 0, empty["total_assets"]) or 0) < 0.1
+    debt_to_assets = _positive_div(empty["total_debt"] or 0, empty["total_assets"])
+    negligible_interest = (empty["interest_expense"] or 0) <= 0 and debt_to_assets is not None and debt_to_assets < 0.1
     equity_to_assets = _positive_div(empty["shareholders_equity"], empty["total_assets"])
     altman = None if is_financial or latest is None else altman_z_score(empty, market_cap)
 
@@ -922,6 +923,13 @@ def analyze_company(
         wacc=rates["wacc"],
         revenue_cagr=revenue_cagr,
     )
+
+    if recommendation["action"] == "INSUFFICIENT_DATA":
+        # A score built from one or two pillars (usually just momentum) would read as a rating.
+        composite = None
+        recommendation["composite_score"] = None
+        recommendation["strengths"] = []
+        recommendation["concerns"] = [flag["message"] for flag in flags]
 
     return {
         "ticker": ticker,

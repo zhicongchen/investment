@@ -266,4 +266,6 @@ def test_missing_statements_reports_insufficient_data():
 
     assert analysis["recommendation"]["action"] == "INSUFFICIENT_DATA"
     assert analysis["recommendation"]["conviction"] == "low"
+    assert analysis["composite_score"] is None
+    assert analysis["recommendation"]["strengths"] == []
     assert analysis["warnings"]

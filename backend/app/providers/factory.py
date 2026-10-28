@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from app.config import FMP_API_KEY, MARKET_DATA_PROVIDER, MOOMOO_OPEND_HOST, MOOMOO_OPEND_PORT
-from app.providers.base import CompanyProfile, FundamentalsData, MarketDataProvider, PriceBarData
+from app.providers.base import CompanyProfile, FinancialStatementData, FundamentalsData, MarketDataProvider, PriceBarData
 from app.providers.fmp_provider import FMPProvider
 from app.providers.moomoo_provider import MoomooProvider
 from app.providers.yfinance_provider import YFinanceProvider
@@ -48,6 +48,14 @@ class CompositeMarketDataProvider(MarketDataProvider):
             free_cash_flow=primary.free_cash_flow if primary.free_cash_flow is not None else fallback.free_cash_flow,
             dividend_yield=primary.dividend_yield if primary.dividend_yield is not None else fallback.dividend_yield,
         )
+
+    def get_financial_statements(self, ticker: str) -> list[FinancialStatementData]:
+        try:
+            statements = self.fundamentals.get_financial_statements(ticker)
+        except Exception as exc:
+            logger.warning("Statements for %s failed on the fundamentals provider: %s", ticker, exc)
+            statements = []
+        return statements or self.prices.get_financial_statements(ticker)
 
     def close(self) -> None:
         self.prices.close()

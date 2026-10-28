@@ -23,6 +23,13 @@ type Signal = {
   risk_flags: string[];
 };
 
+type VerdictSummary = {
+  action: string;
+  conviction: string;
+  composite_score: number | null;
+  margin_of_safety: number | null;
+};
+
 type WatchlistRow = {
   ticker: string;
   name: string;
@@ -33,6 +40,7 @@ type WatchlistRow = {
   signal: Signal | null;
   stale: boolean;
   metrics: PriceMetrics | null;
+  verdict: VerdictSummary | null;
 };
 
 type PriceMetrics = {
@@ -101,6 +109,108 @@ type CompanyDetail = {
   fundamentals: Fundamentals | null;
   signals: Signal[];
   holding: Holding | null;
+};
+
+type AnalysisMetric = {
+  key: string;
+  label: string;
+  value: number | null;
+  format: 'pct' | 'pp' | 'x' | 'score';
+  score: number | null;
+  weight: number;
+  note: string;
+};
+
+type AnalysisPillar = {
+  key: string;
+  label: string;
+  weight: number;
+  score: number | null;
+  metrics: AnalysisMetric[];
+};
+
+type AnnualFinancials = {
+  fiscal_date: string;
+  revenue: number | null;
+  revenue_growth: number | null;
+  gross_margin: number | null;
+  operating_margin: number | null;
+  net_margin: number | null;
+  free_cash_flow: number | null;
+  fcf_margin: number | null;
+  roe: number | null;
+  roic: number | null;
+  debt_to_equity: number | null;
+  current_ratio: number | null;
+  diluted_eps: number | null;
+  diluted_shares: number | null;
+};
+
+type ValuationSummary = {
+  method: string;
+  applicable: boolean;
+  note: string;
+  price: number | null;
+  bear_value: number | null;
+  base_value: number | null;
+  bull_value: number | null;
+  margin_of_safety: number | null;
+  upside: number | null;
+  entry_price: number | null;
+  trim_price: number | null;
+  discount_rate: number | null;
+  cost_of_equity: number | null;
+  beta: number | null;
+  stage_one_growth: number | null;
+  growth_source: string;
+  terminal_growth: number | null;
+  terminal_value_share: number | null;
+  implied_growth: number | null;
+  base_cash_flow: number | null;
+  required_margin_of_safety: number;
+};
+
+type FinancialAnalysis = {
+  ticker: string;
+  sector: string;
+  as_of: string | null;
+  statement_date: string | null;
+  statement_basis: string;
+  is_financial_sector: boolean;
+  data_coverage: number;
+  price: number | null;
+  market_cap: number | null;
+  enterprise_value: number | null;
+  pillars: AnalysisPillar[];
+  composite_score: number | null;
+  annual: AnnualFinancials[];
+  piotroski: { score: number; max: number; normalized: number; fiscal_date: string; checks: { name: string; passed: boolean }[] } | null;
+  altman_z: number | null;
+  economic_spread: number | null;
+  valuation: ValuationSummary;
+  flags: { severity: 'high' | 'medium' | 'low'; message: string }[];
+  position: {
+    shares: number;
+    average_cost: number;
+    market_value: number | null;
+    unrealized_return: number | null;
+    allocation: number | null;
+    target_allocation: number | null;
+    overweight: boolean;
+    underweight: boolean;
+  } | null;
+  recommendation: {
+    action: string;
+    conviction: string;
+    composite_score: number | null;
+    summary: string;
+    rationale: string[];
+    strengths: string[];
+    concerns: string[];
+    triggers: string[];
+    timing_note: string | null;
+  };
+  warnings: string[];
 };
 
 type MarketComparison = {
@@ -238,12 +348,43 @@ function signalClass(action?: string): string {
   return `signal ${action ? action.toLowerCase().replace('_', '-') : 'none'}`;
 }
 
+function actionLabel(action: string): string {
+  return action.replace('_', ' ');
+}
+
+function compactMoney(value: number | null | undefined): string {
+  if (value === null || value === undefined) return 'n/a';
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  return money(value);
+}
+
+function metricText(metric: AnalysisMetric): string {
+  const value = metric.value;
+  if (value === null) return 'n/a';
+  if (metric.format === 'pct') return pct(value);
+  if (metric.format === 'pp') return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)} pp`;
+  if (metric.format === 'x') return `${value.toFixed(1)}x`;
+  return value.toFixed(2);
+}
+
+function scoreClass(score: number | null | undefined): string {
+  if (score === null || score === undefined) return 'score-na';
+  if (score >= 70) return 'score-good';
+  if (score >= 45) return 'score-mid';
+  return 'score-weak';
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>('dashboard');
   const [watchlist, setWatchlist] = useState<WatchlistRow[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string>('');
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
+  const [analysis, setAnalysis] = useState<FinancialAnalysis | null>(null);
   const [comparison, setComparison] = useState<MarketComparison | null>(null);
   const [portfolioAnalytics, setPortfolioAnalytics] = useState<PortfolioAnalytics | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
@@ -285,6 +426,14 @@ function App() {
     setTickerAnalyses(await request<OllamaAnalysis[]>(`/ollama/analyze/ticker/${ticker}`));
   }
 
+  async function loadFinancialAnalysis(ticker: string) {
+    try {
+      setAnalysis(await request<FinancialAnalysis>(`/companies/${ticker}/financial-analysis`));
+    } catch {
+      setAnalysis(null);
+    }
+  }
+
   async function loadPortfolioAnalyses() {
     setPortfolioAnalyses(await request<OllamaAnalysis[]>('/ollama/analyze/portfolio'));
   }
@@ -296,9 +445,12 @@ function App() {
   useEffect(() => {
     if (!selectedTicker) {
       setDetail(null);
+      setAnalysis(null);
       return;
     }
+    setAnalysis(null);
     request<CompanyDetail>(`/companies/${selectedTicker}`).then(setDetail).catch((err) => setError(err.message));
+    loadFinancialAnalysis(selectedTicker);
     loadTickerAnalyses(selectedTicker).catch(() => setTickerAnalyses([]));
   }, [selectedTicker]);
 
@@ -349,6 +501,8 @@ function App() {
       if (ticker) {
         setDetail(await request<CompanyDetail>(`/companies/${ticker}`));
       }
+      const analyzed = ticker ?? selectedTicker;
+      if (analyzed) await loadFinancialAnalysis(analyzed);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Refresh failed');
     } finally {
@@ -387,6 +541,7 @@ function App() {
       });
       setHoldingForm({ ticker: '', shares: '', average_cost: '', target_allocation: '', notes: '' });
       await load();
+      if (selectedTicker) await loadFinancialAnalysis(selectedTicker);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save holding');
     } finally {
@@ -418,6 +573,7 @@ function App() {
       });
       await load();
       setDetail(await request<CompanyDetail>(`/companies/${ticker}`));
+      await loadFinancialAnalysis(ticker);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save fundamentals');
     } finally {
@@ -511,6 +667,7 @@ function App() {
                     <th>Ticker</th>
                     <th>Company</th>
                     <th>Price</th>
+                    <th>Verdict</th>
                     <th>Signal</th>
                     <th>Score</th>
                     <th>YTD</th>
@@ -528,6 +685,12 @@ function App() {
                         <span>{row.sector || row.exchange || 'US stock'}</span>
                       </td>
                       <td>{money(row.latest_price)}</td>
+                      <td>
+                        <span className={signalClass(row.verdict?.action)}>{row.verdict ? actionLabel(row.verdict.action) : 'PENDING'}</span>
+                        {row.verdict?.margin_of_safety !== null && row.verdict?.margin_of_safety !== undefined && (
+                          <span>{row.verdict.margin_of_safety >= 0 ? `${pct(row.verdict.margin_of_safety)} below fair value` : `${pct(-row.verdict.margin_of_safety)} above fair value`}</span>
+                        )}
+                      </td>
                       <td><span className={signalClass(row.signal?.action)}>{row.signal?.action || 'PENDING'}</span></td>
                       <td>{row.signal ? row.signal.score.toFixed(1) : 'n/a'}</td>
                       <td className={row.metrics?.ytd_return && row.metrics.ytd_return >= 0 ? 'positive' : 'negative'}>{pct(row.metrics?.ytd_return)}</td>
@@ -546,6 +709,7 @@ function App() {
 
             <CompanyPanel
               detail={detail}
+              analysis={analysis}
               refresh={refresh}
               saveFundamentals={saveFundamentals}
               busy={busy}
@@ -644,6 +808,7 @@ type FundamentalsForm = Record<keyof Omit<Fundamentals, 'date'>, string>;
 
 function CompanyPanel({
   detail,
+  analysis,
   refresh,
   saveFundamentals,
   busy,
@@ -652,6 +817,7 @@ function CompanyPanel({
   generateAnalysis,
 }: {
   detail: CompanyDetail | null;
+  analysis: FinancialAnalysis | null;
   refresh: (ticker?: string) => Promise<void>;
   saveFundamentals: (ticker: string, payload: Omit<Fundamentals, 'date'>) => Promise<void>;
   busy: boolean;
@@ -696,11 +862,13 @@ function CompanyPanel({
         </div>
       </div>
 
+      {analysis && analysis.ticker === detail.company.ticker && <VerdictPanel analysis={analysis} />}
+
       {latestSignal && (
         <div className="signal-box">
           <span className={signalClass(latestSignal.action)}>{latestSignal.action}</span>
           <strong>{latestSignal.score.toFixed(1)}</strong>
-          <small>{latestSignal.confidence} confidence · {latestSignal.date}</small>
+          <small>Quick screen · {latestSignal.confidence} confidence · {latestSignal.date}</small>
         </div>
       )}
 
@@ -753,15 +921,17 @@ function CompanyPanel({
         </div>
       </div>
 
+      {analysis && analysis.ticker === detail.company.ticker && <FinancialDetails analysis={analysis} />}
+
       <FundamentalsEditor detail={detail} saveFundamentals={saveFundamentals} busy={busy} />
 
       <div className="explain">
         <div>
-          <h4>Reasons</h4>
+          <h4>Quick Screen Reasons</h4>
           <ul>{(latestSignal?.reasons.length ? latestSignal.reasons : ['Signal pending data refresh']).map((item) => <li key={item}>{item}</li>)}</ul>
         </div>
         <div>
-          <h4>Risk Flags</h4>
+          <h4>Quick Screen Risks</h4>
           <ul>{(latestSignal?.risk_flags.length ? latestSignal.risk_flags : ['No risk flags recorded']).map((item) => <li key={item}>{item}</li>)}</ul>
         </div>
       </div>
@@ -774,6 +944,214 @@ function CompanyPanel({
         empty="Generate a local Ollama deep dive from this ticker's collected data."
       />
     </section>
+  );
+}
+
+function VerdictPanel({ analysis }: { analysis: FinancialAnalysis }) {
+  const recommendation = analysis.recommendation;
+  return (
+    <div className="verdict-panel">
+      <div className="verdict-head">
+        <span className={signalClass(recommendation.action)}>{actionLabel(recommendation.action)}</span>
+        <strong>{num(recommendation.composite_score, 0)}<small>/100</small></strong>
+        <small>
+          {recommendation.conviction} conviction · {analysis.statement_date ? `${analysis.statement_basis} ${analysis.statement_date}` : 'no statements'}
+        </small>
+      </div>
+      <p className="verdict-summary">{recommendation.summary}</p>
+      {recommendation.rationale.length > 0 && (
+        <ul className="verdict-rationale">{recommendation.rationale.map((item) => <li key={item}>{item}</li>)}</ul>
+      )}
+      {recommendation.timing_note && <p className="timing-note">{recommendation.timing_note}</p>}
+      {analysis.warnings.map((warning) => <div className="notice compact-notice" key={warning}>{warning}</div>)}
+      <ValueRange valuation={analysis.valuation} />
+      <div className="pillar-list">
+        {analysis.pillars.map((pillar) => (
+          <div className="pillar" key={pillar.key}>
+            <span>{pillar.label}</span>
+            <div className="pillar-track">
+              <div className={`pillar-fill ${scoreClass(pillar.score)}`} style={{ width: `${pillar.score ?? 0}%` }} />
+            </div>
+            <strong>{pillar.score === null ? 'n/a' : pillar.score.toFixed(0)}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ValueRange({ valuation }: { valuation: ValuationSummary }) {
+  const { price, bear_value: bear, base_value: base, bull_value: bull, entry_price: entry, trim_price: trim } = valuation;
+  if (!valuation.applicable || price === null || bear === null || base === null || bull === null) {
+    return <p className="empty">{valuation.note || 'Fair value estimate unavailable.'}</p>;
+  }
+  const points = [price, bear, bull, entry ?? base, trim ?? bull];
+  const low = Math.min(...points) * 0.9;
+  const high = Math.max(...points) * 1.08;
+  const position = (value: number) => `${((value - low) / (high - low)) * 100}%`;
+  const upside = valuation.upside;
+  return (
+    <div className="value-range">
+      <div className="value-range-head">
+        <span>Fair value <strong>{money(base)}</strong></span>
+        {upside !== null && (
+          <strong className={upside >= 0 ? 'positive' : 'negative'}>{upside >= 0 ? '+' : ''}{pct(upside)} to base case</strong>
+        )}
+      </div>
+      <div className="range-track">
+        {entry !== null && <div className="zone buy-zone" style={{ left: 0, width: position(entry) }} />}
+        {trim !== null && <div className="zone rich-zone" style={{ left: position(trim), right: 0 }} />}
+        <div className="fair-band" style={{ left: position(bear), width: `calc(${position(bull)} - ${position(bear)})` }} />
+        <div className="base-tick" style={{ left: position(base) }} />
+        <div className="price-marker" style={{ left: position(price) }}><span>{money(price)}</span></div>
+      </div>
+      <div className="range-legend">
+        <span>Bear {money(bear)}</span>
+        <span>Base {money(base)}</span>
+        <span>Bull {money(bull)}</span>
+        {entry !== null && <span className="positive">Buy below {money(entry)}</span>}
+        {trim !== null && <span className="negative">Rich above {money(trim)}</span>}
+      </div>
+    </div>
+  );
+}
+
+type AnnualLine = { key: Exclude<keyof AnnualFinancials, 'fiscal_date'>; label: string; format: 'money' | 'pct' | 'x' | 'eps' | 'shares' };
+
+const ANNUAL_LINES: AnnualLine[] = [
+  { key: 'revenue', label: 'Revenue', format: 'money' },
+  { key: 'revenue_growth', label: 'Revenue growth', format: 'pct' },
+  { key: 'gross_margin', label: 'Gross margin', format: 'pct' },
+  { key: 'operating_margin', label: 'Operating margin', format: 'pct' },
+  { key: 'net_margin', label: 'Net margin', format: 'pct' },
+  { key: 'free_cash_flow', label: 'Free cash flow', format: 'money' },
+  { key: 'fcf_margin', label: 'FCF margin', format: 'pct' },
+  { key: 'roic', label: 'ROIC', format: 'pct' },
+  { key: 'roe', label: 'ROE', format: 'pct' },
+  { key: 'debt_to_equity', label: 'Debt / equity', format: 'x' },
+  { key: 'current_ratio', label: 'Current ratio', format: 'x' },
+  { key: 'diluted_eps', label: 'Diluted EPS', format: 'eps' },
+  { key: 'diluted_shares', label: 'Diluted shares', format: 'shares' },
+];
+
+function annualCell(value: number | null, format: AnnualLine['format']): string {
+  if (value === null) return 'n/a';
+  if (format === 'money') return compactMoney(value);
+  if (format === 'pct') return pct(value);
+  if (format === 'x') return `${value.toFixed(2)}x`;
+  if (format === 'eps') return money(value);
+  return `${(value / 1e6).toFixed(0)}M`;
+}
+
+function FinancialDetails({ analysis }: { analysis: FinancialAnalysis }) {
+  const recommendation = analysis.recommendation;
+  const valuation = analysis.valuation;
+  const position = analysis.position;
+  return (
+    <div className="financial-details">
+      <div className="explain triple">
+        <div>
+          <h4>Strengths</h4>
+          <ul>{(recommendation.strengths.length ? recommendation.strengths : ['Nothing stands out yet']).map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+        <div>
+          <h4>Concerns</h4>
+          <ul>{(recommendation.concerns.length ? recommendation.concerns : ['No major concerns']).map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+        <div>
+          <h4>What Would Change the View</h4>
+          <ul>{(recommendation.triggers.length ? recommendation.triggers : ['Refresh after the next earnings report']).map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+      </div>
+
+      {analysis.flags.length > 0 && (
+        <div className="flag-list">
+          <h4>Red Flags</h4>
+          {analysis.flags.map((flag) => (
+            <div key={flag.message} className={`flag ${flag.severity}`}><span>{flag.severity}</span>{flag.message}</div>
+          ))}
+        </div>
+      )}
+
+      {position && (
+        <div className="metric-row compact">
+          <div><span>Unrealized</span><strong className={(position.unrealized_return ?? 0) >= 0 ? 'positive' : 'negative'}>{pct(position.unrealized_return)}</strong></div>
+          <div><span>Market Value</span><strong>{money(position.market_value)}</strong></div>
+          <div><span>Allocation</span><strong>{pct(position.allocation)}</strong></div>
+          <div><span>Target</span><strong>{pct(position.target_allocation)}</strong></div>
+        </div>
+      )}
+
+      <details className="analysis-section" open>
+        <summary>Valuation model</summary>
+        <table className="mini-table">
+          <tbody>
+            <tr><td>Method</td><td>{valuation.method || 'n/a'}{valuation.note && <span>{valuation.note}</span>}</td></tr>
+            <tr><td>Market cap / EV</td><td>{compactMoney(analysis.market_cap)} / {compactMoney(analysis.enterprise_value)}</td></tr>
+            <tr><td>Discount rate (WACC)</td><td>{pct(valuation.discount_rate)}<span>cost of equity {pct(valuation.cost_of_equity)} · beta {num(valuation.beta)}</span></td></tr>
+            <tr><td>Base free cash flow</td><td>{compactMoney(valuation.base_cash_flow)}<span>average of TTM and 3-year FCF to firm</span></td></tr>
+            <tr><td>Growth, years 1-5</td><td>{pct(valuation.stage_one_growth)}<span>{valuation.growth_source}</span></td></tr>
+            <tr><td>Terminal growth</td><td>{pct(valuation.terminal_growth)}<span>{pct(valuation.terminal_value_share)} of value from terminal year</span></td></tr>
+            <tr><td>Growth priced in</td><td>{pct(valuation.implied_growth)}<span>reverse DCF at today's price</span></td></tr>
+            <tr><td>Margin of safety</td><td>{pct(valuation.margin_of_safety)}<span>required {pct(valuation.required_margin_of_safety)}</span></td></tr>
+            <tr><td>ROIC minus WACC</td><td className={(analysis.economic_spread ?? 0) >= 0 ? 'positive' : 'negative'}>{pct(analysis.economic_spread)}</td></tr>
+            <tr><td>Altman Z / Piotroski F</td><td>{num(analysis.altman_z)} / {analysis.piotroski ? `${analysis.piotroski.score} of ${analysis.piotroski.max}` : 'n/a'}</td></tr>
+          </tbody>
+        </table>
+      </details>
+
+      <details className="analysis-section">
+        <summary>Scorecard detail</summary>
+        {analysis.pillars.map((pillar) => (
+          <div key={pillar.key} className="scorecard">
+            <h5>{pillar.label} <span className={`score-chip ${scoreClass(pillar.score)}`}>{pillar.score === null ? 'n/a' : pillar.score.toFixed(0)}</span></h5>
+            <table className="mini-table">
+              <tbody>
+                {pillar.metrics.filter((metric) => metric.value !== null || metric.score !== null).map((metric) => (
+                  <tr key={metric.key}>
+                    <td>{metric.label}{metric.note && <span>{metric.note}</span>}</td>
+                    <td>{metricText(metric)}</td>
+                    <td><span className={`score-chip ${scoreClass(metric.score)}`}>{metric.score === null ? 'info' : metric.score.toFixed(0)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </details>
+
+      {analysis.annual.length > 0 && (
+        <details className="analysis-section">
+          <summary>Annual trend</summary>
+          <div className="table-scroll">
+            <table className="mini-table trend-table">
+              <thead>
+                <tr><th></th>{analysis.annual.map((row) => <th key={row.fiscal_date}>FY{row.fiscal_date.slice(0, 4)}</th>)}</tr>
+              </thead>
+              <tbody>
+                {ANNUAL_LINES.map((line) => (
+                  <tr key={line.key}>
+                    <td>{line.label}</td>
+                    {analysis.annual.map((row) => <td key={row.fiscal_date}>{annualCell(row[line.key], line.format)}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+
+      {analysis.piotroski && (
+        <details className="analysis-section">
+          <summary>Piotroski F-score {analysis.piotroski.score} of {analysis.piotroski.max} (FY{analysis.piotroski.fiscal_date.slice(0, 4)})</summary>
+          <ul className="checklist">
+            {analysis.piotroski.checks.map((check) => (
+              <li key={check.name} className={check.passed ? 'positive' : 'negative'}>{check.passed ? '✓' : '✗'} {check.name}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 

@@ -97,6 +97,13 @@ class SignalRead(BaseModel):
     risk_flags: list[str]
 
 
+class VerdictSummary(BaseModel):
+    action: str
+    conviction: str
+    composite_score: Optional[float]
+    margin_of_safety: Optional[float] = None
+
+
 class WatchlistRow(BaseModel):
     ticker: str
     name: str
@@ -107,6 +114,7 @@ class WatchlistRow(BaseModel):
     signal: Optional[SignalRead]
     stale: bool
     metrics: Optional[PriceMetrics] = None
+    verdict: Optional[VerdictSummary] = None
 
 
 class CompanyDetail(BaseModel):
@@ -170,3 +178,127 @@ class OllamaAnalysisRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AnalysisMetric(BaseModel):
+    key: str
+    label: str
+    value: Optional[float]
+    format: str
+    score: Optional[float]
+    weight: float
+    note: str = ""
+
+
+class AnalysisPillar(BaseModel):
+    key: str
+    label: str
+    weight: float
+    score: Optional[float]
+    metrics: list[AnalysisMetric]
+
+
+class AnnualFinancials(BaseModel):
+    fiscal_date: date
+    revenue: Optional[float]
+    revenue_growth: Optional[float]
+    gross_margin: Optional[float]
+    operating_margin: Optional[float]
+    net_margin: Optional[float]
+    free_cash_flow: Optional[float]
+    fcf_margin: Optional[float]
+    roe: Optional[float]
+    roic: Optional[float]
+    debt_to_equity: Optional[float]
+    current_ratio: Optional[float]
+    diluted_eps: Optional[float]
+    diluted_shares: Optional[float]
+
+
+class PiotroskiCheck(BaseModel):
+    name: str
+    passed: bool
+
+
+class PiotroskiScore(BaseModel):
+    score: int
+    max: int
+    normalized: float
+    fiscal_date: date
+    checks: list[PiotroskiCheck]
+
+
+class ValuationSummary(BaseModel):
+    method: str
+    applicable: bool
+    note: str = ""
+    price: Optional[float]
+    bear_value: Optional[float]
+    base_value: Optional[float]
+    bull_value: Optional[float]
+    margin_of_safety: Optional[float]
+    upside: Optional[float]
+    entry_price: Optional[float]
+    trim_price: Optional[float]
+    discount_rate: Optional[float]
+    cost_of_equity: Optional[float]
+    beta: Optional[float]
+    stage_one_growth: Optional[float]
+    growth_source: str = ""
+    terminal_growth: Optional[float]
+    terminal_value_share: Optional[float]
+    implied_growth: Optional[float]
+    base_cash_flow: Optional[float]
+    required_margin_of_safety: float
+
+
+class AnalysisFlag(BaseModel):
+    severity: str
+    message: str
+
+
+class PositionContext(BaseModel):
+    shares: float
+    average_cost: float
+    market_value: Optional[float]
+    unrealized_return: Optional[float]
+    allocation: Optional[float]
+    target_allocation: Optional[float]
+    overweight: bool
+    underweight: bool
+
+
+class InvestmentRecommendation(BaseModel):
+    action: str
+    conviction: str
+    composite_score: Optional[float]
+    summary: str
+    rationale: list[str]
+    strengths: list[str]
+    concerns: list[str]
+    triggers: list[str]
+    timing_note: Optional[str]
+
+
+class FinancialAnalysisRead(BaseModel):
+    ticker: str
+    sector: str
+    as_of: Optional[date]
+    statement_date: Optional[date]
+    statement_basis: str
+    is_financial_sector: bool
+    data_coverage: float
+    price: Optional[float]
+    market_cap: Optional[float]
+    enterprise_value: Optional[float]
+    pillars: list[AnalysisPillar]
+    composite_score: Optional[float]
+    annual: list[AnnualFinancials]
+    piotroski: Optional[PiotroskiScore]
+    altman_z: Optional[float]
+    economic_spread: Optional[float]
+    valuation: ValuationSummary
+    flags: list[AnalysisFlag]
+    position: Optional[PositionContext]
+    recommendation: InvestmentRecommendation
+    warnings: list[str]

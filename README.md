@@ -55,7 +55,7 @@ Run its tests with `python -m pytest tests/options`.
 
 ## Local Databases
 
-- `data/dashboard.db` - Web dashboard research data: watchlist, prices, fundamentals, manual holdings, signals, and local AI analyses.
+- `data/dashboard.db` - Web dashboard research data: watchlist, prices, fundamentals, reported financial statements, manual holdings, signals, and local AI analyses.
 - `data/options.db` - Put-selling scan history plus the scanner's per-day market data cache.
 - `data/ibkr_bot_audit.db` - Standalone IBKR bot audit data: runs, decisions, risk checks, synced positions, submitted orders, and fills.
 
@@ -94,6 +94,21 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 When `FMP_API_KEY` is present, refreshes keep the price provider above and use Financial Modeling Prep for PE, forward PE, growth, debt-to-equity, free cash flow, and dividend yield. Without a key, the app keeps the existing `yfinance` fundamentals fallback. You can also edit fundamentals manually from the selected company panel.
+
+### Financial Analysis and Buy/Hold Verdict
+
+Each refresh also downloads up to five years of annual and eight quarters of reported financial statements (income statement, balance sheet, cash flow) from yfinance, or from FMP when `FMP_API_KEY` is set (FMP quarterly statements need a paid plan; annual still works). They are stored in the `financial_statements` table and analyzed on demand by `GET /api/companies/{ticker}/financial-analysis`, shown in the selected-company panel and as the **Verdict** column of the watchlist.
+
+What the analysis computes (`backend/app/services/financials.py`):
+
+- **Ratios on trailing twelve months** (sum of the last four quarters; latest fiscal year if quarters are missing): gross/operating/net/FCF margins, ROE, ROIC on average invested capital, FCF conversion, Sloan accruals ratio, stock-comp intensity, current/quick ratio, debt/equity, net debt/EBITDA, interest coverage, payout ratio, buyback and dividend yield.
+- **Growth**: 3-year revenue, diluted EPS and FCF CAGR, operating-margin trend, share-count change, and the forward EPS growth implied by trailing vs forward P/E.
+- **Accounting scores**: Piotroski F-score (9 tests, with the pass/fail list) and Altman Z-score (distress < 1.81, safe > 2.99).
+- **Intrinsic value**: two-stage DCF on free cash flow to the firm (5 years at a growth rate blended from history and forward estimates, capped at 20%, fading to terminal growth over years 6-10), discounted at WACC with a CAPM cost of equity and a 2-year regression beta vs SPY. Bear/base/bull scenarios give a fair-value range, a **buy-below price** (base value less the required margin of safety) and a **rich-above price**. A reverse DCF solves for the growth rate the current price implies. Banks and insurers use a justified price-to-book model (ROE vs cost of equity) instead.
+- **Five pillars scored 0-100**: profitability & quality (25%), financial strength (20%), growth (20%), valuation (25%), price momentum (10%), plus red flags such as negative operating cash flow, distress-zone Z-score, thin interest coverage, heavy leverage, dilution, low-quality earnings and "priced for perfection".
+- **Verdict**: not owned → `BUY`, `ACCUMULATE` (good business at a fair price, build gradually), `WATCH` (wait for the buy-below price) or `AVOID`; owned → `ADD`, `HOLD`, `TRIM` (far above fair value or overweight vs target) or `SELL_REVIEW` (red flags with a weak score). Each verdict comes with conviction, a written summary, strengths, concerns, the price levels and events that would change it, and a timing note when price momentum disagrees with fundamentals.
+
+Valuation inputs are set in `backend/.env`: `RISK_FREE_RATE` (keep it near the current 10-year Treasury yield), `EQUITY_RISK_PREMIUM`, `TERMINAL_GROWTH_RATE` and `REQUIRED_MARGIN_OF_SAFETY`. The Ollama ticker memo receives the full analysis and is asked to check the verdict against the numbers. The older 7-field signal is kept as the "quick screen". The verdict is a model of reported numbers: it knows nothing about news, guidance, competitive changes or one-off items, so treat it as a starting point for your own research.
 
 ## Frontend Setup
 

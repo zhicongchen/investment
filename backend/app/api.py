@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -22,6 +23,7 @@ from app.schemas import (
     HoldingRead,
     HoldingUpsert,
     DemoImportResult,
+    FinancialAnalysisRead,
     MarketComparison,
     OllamaAnalysisRead,
     OllamaStatus,
@@ -29,6 +31,7 @@ from app.schemas import (
     PricePoint,
     RefreshResult,
     SignalRead,
+    VerdictSummary,
     WatchlistRow,
 )
 from app.services.analytics import (
@@ -41,6 +44,7 @@ from app.services.analytics import (
     summary_metrics,
 )
 from app.services.refresh import ensure_company, recompute_signal, refresh_all, refresh_ticker
+from app.services.research import company_financial_analysis
 from app.services.scoring import decode_list
 from app.services.ollama import (
     OllamaClient,
@@ -51,6 +55,7 @@ from app.services.ollama import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _signal_read(signal: Optional[Signal]) -> Optional[SignalRead]:
@@ -114,11 +119,23 @@ def list_watchlist(db: Session = Depends(get_db)) -> list[WatchlistRow]:
     rows: list[WatchlistRow] = []
     stale_before = date.today() - timedelta(days=5)
     benchmark_prices = prices_for(db, BENCHMARK_TICKER)
+    portfolio_value = _portfolio_value(db)
     for company in companies:
         latest = _latest_price(db, company.ticker)
         signal = _latest_signal(db, company.ticker)
         close = latest.adjusted_close if latest and latest.adjusted_close is not None else latest.close if latest else None
         prices = prices_for(db, company.ticker)
+        try:
+            analysis = company_financial_analysis(db, company.ticker, prices, benchmark_prices, portfolio_value)
+            verdict = VerdictSummary(
+                action=analysis["recommendation"]["action"],
+                conviction=analysis["recommendation"]["conviction"],
+                composite_score=analysis["composite_score"],
+                margin_of_safety=analysis["valuation"]["margin_of_safety"],
+            )
+        except Exception:
+            logger.exception("Financial analysis failed for %s", company.ticker)
+            verdict = None
         rows.append(
             WatchlistRow(
                 ticker=company.ticker,
@@ -130,6 +147,7 @@ def list_watchlist(db: Session = Depends(get_db)) -> list[WatchlistRow]:
                 signal=_signal_read(signal),
                 stale=latest is None or latest.date < stale_before,
                 metrics=summary_metrics(prices, benchmark_prices),
+                verdict=verdict,
             )
         )
     return rows
@@ -205,6 +223,14 @@ def company_detail(ticker: str, db: Session = Depends(get_db)) -> CompanyDetail:
         signals=[_signal_read(signal) for signal in signals if _signal_read(signal) is not None],
         holding=_holding_read(db, holding) if holding else None,
     )
+
+
+@router.get("/companies/{ticker}/financial-analysis", response_model=FinancialAnalysisRead)
+def financial_analysis(ticker: str, db: Session = Depends(get_db)) -> dict:
+    symbol = ticker.upper()
+    if db.get(Company, symbol) is None:
+        raise HTTPException(status_code=404, detail="Ticker not found")
+    return company_financial_analysis(db, symbol)
 
 
 @router.put("/companies/{ticker}/fundamentals", response_model=FundamentalsRead)

@@ -269,3 +269,37 @@ def test_missing_statements_reports_insufficient_data():
     assert analysis["composite_score"] is None
     assert analysis["recommendation"]["strengths"] == []
     assert analysis["warnings"]
+
+
+def test_trailing_twelve_months_used_when_last_quarter_closes_the_fiscal_year():
+    quarters = [statement(0, 10e9, period="quarterly", fiscal_date=day) for day in [date(2025, 3, 31), date(2025, 6, 30), date(2025, 9, 30), date(2025, 12, 31)]]
+    annual, quarterly = _split_periods([statement(2025, 40e9)] + quarters)
+
+    _, basis = _trailing_twelve_months(annual, quarterly)
+
+    assert basis == "TTM"
+
+
+def test_heavy_capital_spending_normalizes_cash_flow_from_nopat():
+    investing = [
+        statement(2021 + i, 80e9 * 1.12**i, 0.30, shares=1_000e6, capital_expenditure=80e9 * 1.12**i * 0.25)
+        for i in range(5)
+    ]
+
+    analysis = analyze(investing, price_level=120)
+
+    valuation = analysis["valuation"]
+    assert valuation["applicable"] is True
+    assert valuation["cash_flow_basis"].startswith("Normalized")
+    reported_fcf = investing[-1].operating_cash_flow - investing[-1].capital_expenditure
+    assert valuation["base_cash_flow"] > 2 * reported_fcf
+    assert analysis["recommendation"]["conviction"] != "high"
+
+
+def test_negative_forward_growth_is_ignored_when_sales_are_growing():
+    fundamentals = SimpleNamespace(pe=16.0, forward_pe=21.0, revenue_growth=0.12, dividend_yield=None)
+
+    analysis = analyze(compounder(), price_level=120, fundamentals=fundamentals)
+
+    assert "forward" not in analysis["valuation"]["growth_source"]
+    assert analysis["valuation"]["stage_one_growth"] > 0.08

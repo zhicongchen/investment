@@ -167,6 +167,7 @@ type ValuationSummary = {
   terminal_value_share: number | null;
   implied_growth: number | null;
   base_cash_flow: number | null;
+  cash_flow_basis: string;
   required_margin_of_safety: number;
 };
 
@@ -1089,7 +1090,7 @@ function FinancialDetails({ analysis }: { analysis: FinancialAnalysis }) {
             <tr><td>Method</td><td>{valuation.method || 'n/a'}{valuation.note && <span>{valuation.note}</span>}</td></tr>
             <tr><td>Market cap / EV</td><td>{compactMoney(analysis.market_cap)} / {compactMoney(analysis.enterprise_value)}</td></tr>
             <tr><td>Discount rate (WACC)</td><td>{pct(valuation.discount_rate)}<span>cost of equity {pct(valuation.cost_of_equity)} · beta {num(valuation.beta)}</span></td></tr>
-            <tr><td>Base free cash flow</td><td>{compactMoney(valuation.base_cash_flow)}<span>average of TTM and 3-year FCF to firm</span></td></tr>
+            <tr><td>Base free cash flow</td><td>{compactMoney(valuation.base_cash_flow)}<span>{valuation.cash_flow_basis}</span></td></tr>
             <tr><td>Growth, years 1-5</td><td>{pct(valuation.stage_one_growth)}<span>{valuation.growth_source}</span></td></tr>
             <tr><td>Terminal growth</td><td>{pct(valuation.terminal_growth)}<span>{pct(valuation.terminal_value_share)} of value from terminal year</span></td></tr>
             <tr><td>Growth priced in</td><td>{pct(valuation.implied_growth)}<span>reverse DCF at today's price</span></td></tr>

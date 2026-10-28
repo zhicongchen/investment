@@ -169,7 +169,7 @@ def _trailing_twelve_months(annual: list[_Period], quarterly: list[_Period]) -> 
     latest_annual = annual[-1] if annual else None
     last_four = quarterly[-4:]
     consecutive = len(last_four) == 4 and (last_four[-1].fiscal_date - last_four[0].fiscal_date).days <= 300
-    if consecutive and (latest_annual is None or last_four[-1].fiscal_date > latest_annual.fiscal_date):
+    if consecutive and (latest_annual is None or last_four[-1].fiscal_date >= latest_annual.fiscal_date):
         values: dict[str, Optional[float]] = {}
         for field in STATEMENT_FLOW_FIELDS:
             parts = [quarter[field] for quarter in last_four]
@@ -462,13 +462,24 @@ def _discount_rate(
     }
 
 
+def _base_fcff(latest: _Period, annual: list[_Period]) -> Optional[float]:
+    """Average of TTM and 3-year-average free cash flow to firm, smoothing lumpy capital spending."""
+    candidates = [value for value in [_fcff(latest), _avg(*[_fcff(p) for p in annual[-3:]])] if value is not None]
+    return mean(candidates) if candidates else None
+
+
 def _growth_assumption(
     revenue_cagr: Optional[float],
     fcf_cagr: Optional[float],
     forward_growth: Optional[float],
     reported_revenue_growth: Optional[float],
     assumptions: ValuationAssumptions,
+    capex_heavy: bool = False,
 ) -> tuple[Optional[float], str]:
+    if capex_heavy:
+        fcf_cagr = None  # FCF growth is distorted by the investment cycle, not a guide to the business
+    if forward_growth is not None and forward_growth < 0 and revenue_cagr is not None and revenue_cagr > 0:
+        forward_growth = None  # falling forward EPS with growing sales usually means a one-off gain in trailing EPS
     inputs = [
         (revenue_cagr, 0.5, "revenue CAGR"),
         (fcf_cagr, 0.2, "FCF CAGR"),
@@ -494,11 +505,27 @@ def _dcf_valuation(
     market_cap: Optional[float],
     rates: dict[str, Optional[float]],
     growth: Optional[float],
+    roic: Optional[float],
+    capex_heavy: bool,
     assumptions: ValuationAssumptions,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {"method": "Two-stage DCF on free cash flow to firm", "applicable": False}
-    candidates = [value for value in [_fcff(latest), _avg(*[_fcff(p) for p in annual[-3:]])] if value is not None]
-    base = mean(candidates) if candidates else None
+    result: dict[str, Any] = {
+        "method": "Two-stage DCF on free cash flow to firm",
+        "applicable": False,
+        "cash_flow_basis": "Average of TTM and 3-year free cash flow to firm",
+    }
+    base = _base_fcff(latest, annual)
+    nopat = _nopat(latest)
+    if capex_heavy and growth is not None and nopat and nopat > 0 and roic and roic > 0:
+        # Capital spending far above maintenance depresses today's FCF. Value-driver formula:
+        # sustainable FCF = NOPAT x (1 - reinvestment rate), reinvestment rate = growth / ROIC.
+        reinvestment = _clamp(growth / roic, 0, 0.7)
+        base = nopat * (1 - reinvestment)
+        result["normalized"] = True
+        result["cash_flow_basis"] = (
+            f"Normalized: NOPAT x (1 - {reinvestment * 100:.0f}% reinvestment), because reported FCF is under half of "
+            "after-tax operating profit while the company invests heavily"
+        )
     result["base_cash_flow"] = base
     if base is None or base <= 0:
         result["note"] = "Free cash flow is negative or missing, so a cash-flow DCF is not meaningful."
@@ -747,12 +774,16 @@ def analyze_company(
     buyback_yield = _positive_div(empty["share_repurchases"], market_cap)
     payout_ratio = _positive_div(empty["dividends_paid"], empty["net_income"])
 
+    nopat = _nopat(empty)
+    base_fcff = _base_fcff(empty, annual) if latest is not None else None
+    capex_heavy = bool(nopat and nopat > 0 and (base_fcff is None or base_fcff < 0.5 * nopat))
     growth_assumption, growth_source = _growth_assumption(
         revenue_cagr,
         fcf_cagr,
         forward_growth,
         getattr(fundamentals, "revenue_growth", None) if fundamentals is not None else None,
         assumptions,
+        capex_heavy=capex_heavy and not is_financial,
     )
     if latest is None:
         valuation = {"method": "", "applicable": False, "note": "No statements to value."}
@@ -766,6 +797,8 @@ def analyze_company(
             market_cap=market_cap,
             rates=rates,
             growth=growth_assumption,
+            roic=roic,
+            capex_heavy=capex_heavy,
             assumptions=assumptions,
         )
     base_value = valuation.get("base_value")
@@ -969,6 +1002,7 @@ def analyze_company(
             "terminal_value_share": _round(valuation.get("terminal_value_share")),
             "implied_growth": _round(valuation.get("implied_growth")),
             "base_cash_flow": _round(valuation.get("base_cash_flow"), 0),
+            "cash_flow_basis": valuation.get("cash_flow_basis", ""),
             "required_margin_of_safety": assumptions.required_margin_of_safety,
         },
         "flags": flags,
@@ -1090,7 +1124,7 @@ def _format_metric(metric: dict[str, Any]) -> str:
         return f"{value * 100:+.1f} pp"
     if metric["format"] == "x":
         return _fmt_x(value)
-    return f"{value:.2f}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def _recommendation(
@@ -1178,7 +1212,13 @@ def _recommendation(
         conviction = "medium"
     else:
         conviction = "low"
-    if conviction == "high" and (is_financial or (valuation.get("terminal_value_share") or 0) > 0.8):
+    model_dependent = (
+        is_financial
+        or valuation.get("normalized", False)
+        or (valuation.get("terminal_value_share") or 0) > 0.8
+        or (margin_of_safety is not None and abs(margin_of_safety) > 1)  # model and market far apart
+    )
+    if conviction == "high" and model_dependent:
         conviction = "medium"
 
     # Narrative.

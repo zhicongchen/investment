@@ -249,6 +249,7 @@ class ValuationSummary(BaseModel):
     terminal_value_share: Optional[float]
     implied_growth: Optional[float]
     base_cash_flow: Optional[float]
+    cash_flow_basis: str = ""
     required_margin_of_safety: float
 
 

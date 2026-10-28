@@ -122,6 +122,7 @@ def markdown_report(analyses: list[dict[str, Any]], failed: dict[str, str]) -> s
             f"| Altman Z / Piotroski F | {_num(analysis['altman_z'], 2)} / {piotroski_text} |",
             f"| P/E / forward P/E / FCF yield | {_num(_metric(analysis, 'pe'))} / {_num(_metric(analysis, 'forward_pe'))} / {_pct(_metric(analysis, 'fcf_yield'))} |",
             f"| DCF growth yrs 1-5 / growth priced in | {_pct(valuation['stage_one_growth'])} / {_pct(valuation['implied_growth'])} |",
+            f"| Base cash flow | {_money(valuation['base_cash_flow'])} ({valuation['cash_flow_basis'] or 'n/a'}) |",
             f"| Rich above | {_money(valuation['trim_price'])} |",
             "",
             "**Strengths**",

@@ -10,20 +10,14 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { browserRequest } from './browser/api';
+import { clearAll } from './browser/storage';
+import { DEFAULT_SCAN_CONFIG, loadScanConfig, loadSettings, saveScanConfig, saveSettings } from './browser/settings';
 import './styles.css';
 
-const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api';
-const API_BASE_STORAGE_KEY = 'apiBase';
-
-function storedApiBase(): string {
-  try {
-    return localStorage.getItem(API_BASE_STORAGE_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-const API_BASE = (storedApiBase() || DEFAULT_API_BASE).replace(/\/+$/, '');
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:8000/api';
+// The GitHub Pages build fetches market data in the browser instead of calling the local backend.
+const ONLINE = import.meta.env.VITE_DATA_MODE === 'browser';
 
 type Signal = {
   date: string;
@@ -220,15 +214,11 @@ type OptionsScan = {
 };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
-      headers: { 'Content-Type': 'application/json' },
-      ...options,
-    });
-  } catch {
-    throw new Error(`Cannot reach the backend at ${API_BASE}. Start it on this computer (uvicorn app.main:app --port 8000) or change the backend URL in Settings.`);
-  }
+  if (ONLINE) return browserRequest<T>(path, options);
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
   if (!response.ok) {
     throw new Error(await response.text());
   }
@@ -270,20 +260,6 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [error, setError] = useState('');
-  const [apiBaseInput, setApiBaseInput] = useState(API_BASE);
-
-  function saveApiBase(event: React.FormEvent) {
-    event.preventDefault();
-    const value = apiBaseInput.trim().replace(/\/+$/, '');
-    try {
-      if (!value || value === DEFAULT_API_BASE) localStorage.removeItem(API_BASE_STORAGE_KEY);
-      else localStorage.setItem(API_BASE_STORAGE_KEY, value);
-    } catch {
-      setError('Could not save the backend URL: browser storage is unavailable.');
-      return;
-    }
-    window.location.reload();
-  }
 
   async function load() {
     setError('');
@@ -336,10 +312,10 @@ function App() {
     if (tab === 'compare' || tab === 'holdings') {
       loadAnalytics().catch((err) => setError(err.message));
     }
-    if (tab === 'holdings') {
+    if (tab === 'holdings' && !ONLINE) {
       loadPortfolioAnalyses().catch(() => setPortfolioAnalyses([]));
     }
-    if (tab === 'settings') {
+    if (tab === 'settings' && !ONLINE) {
       loadOllamaStatus().catch((err) => setError(err.message));
     }
   }, [tab, holdings.length, watchlist.length]);
@@ -488,7 +464,7 @@ function App() {
           <BarChart3 size={26} />
           <div>
             <h1>Stock Signals</h1>
-            <p>Local decision support</p>
+            <p>{ONLINE ? 'Runs in your browser' : 'Local decision support'}</p>
           </div>
         </div>
         <button className={tab === 'dashboard' ? 'nav active' : 'nav'} onClick={() => setTab('dashboard')}>
@@ -630,13 +606,15 @@ function App() {
                 </tbody>
               </table>
               <PortfolioPanel analytics={portfolioAnalytics} />
-              <AnalysisPanel
-                title="Portfolio AI Analysis"
-                analyses={portfolioAnalyses}
-                busy={aiBusy}
-                onGenerate={generatePortfolioAnalysis}
-                empty="Generate a local Ollama memo from holdings, allocation drift, watchlist signals, and SPY context."
-              />
+              {!ONLINE && (
+                <AnalysisPanel
+                  title="Portfolio AI Analysis"
+                  analyses={portfolioAnalyses}
+                  busy={aiBusy}
+                  onGenerate={generatePortfolioAnalysis}
+                  empty="Generate a local Ollama memo from holdings, allocation drift, watchlist signals, and SPY context."
+                />
+              )}
             </section>
           </div>
         )}
@@ -645,18 +623,11 @@ function App() {
           <ComparePanel comparison={comparison} />
         )}
 
-        {tab === 'settings' && (
+        {tab === 'settings' && ONLINE && <OnlineSettings onSaved={() => load().catch((err) => setError(err.message))} />}
+
+        {tab === 'settings' && !ONLINE && (
           <section className="panel settings-panel">
             <h3>Local Configuration</h3>
-            <form className="stack-form api-base-form" onSubmit={saveApiBase}>
-              <label htmlFor="api-base">Backend URL</label>
-              <div className="inline-form">
-                <input id="api-base" value={apiBaseInput} onChange={(event) => setApiBaseInput(event.target.value)} placeholder={DEFAULT_API_BASE} />
-                <button className="icon-button" title="Save backend URL">
-                  <Save size={18} />
-                </button>
-              </div>
-            </form>
             <dl>
               <dt>Market</dt><dd>US-listed stocks</dd>
               <dt>Data provider</dt><dd>Moomoo OpenD prices (yfinance when OpenD is offline); yfinance or FMP for sector and extra fundamentals</dd>
@@ -726,9 +697,11 @@ function CompanyPanel({
           <p>{detail.company.sector || detail.company.exchange || 'US stock'}</p>
         </div>
         <div className="button-row">
-          <button className="secondary" onClick={() => generateAnalysis(detail.company.ticker)} disabled={aiBusy}>
-            <BrainCircuit size={16} /> AI Analysis
-          </button>
+          {!ONLINE && (
+            <button className="secondary" onClick={() => generateAnalysis(detail.company.ticker)} disabled={aiBusy}>
+              <BrainCircuit size={16} /> AI Analysis
+            </button>
+          )}
           <button className="secondary" onClick={() => refresh(detail.company.ticker)}>
             <RefreshCw size={16} /> Refresh
           </button>
@@ -805,13 +778,15 @@ function CompanyPanel({
         </div>
       </div>
 
-      <AnalysisPanel
-        title="Ticker AI Analysis"
-        analyses={analyses}
-        busy={aiBusy}
-        onGenerate={() => generateAnalysis(detail.company.ticker)}
-        empty="Generate a local Ollama deep dive from this ticker's collected data."
-      />
+      {!ONLINE && (
+        <AnalysisPanel
+          title="Ticker AI Analysis"
+          analyses={analyses}
+          busy={aiBusy}
+          onGenerate={() => generateAnalysis(detail.company.ticker)}
+          empty="Generate a local Ollama deep dive from this ticker's collected data."
+        />
+      )}
     </section>
   );
 }
@@ -1038,23 +1013,53 @@ const ADVICE_CLASS: Record<string, string> = {
 function PutSignalsPanel() {
   const [scan, setScan] = useState<OptionsScan | null>(null);
   const [error, setError] = useState('');
+  const [scanning, setScanning] = useState(false);
 
   async function load() {
     try {
       setScan(await request<OptionsScan>('/options/latest'));
       setError('');
     } catch (err) {
+      // Online, "no scan yet" is the normal first state; the Scan now button covers it.
+      if (!ONLINE) setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function scanNow() {
+    setScanning(true);
+    try {
+      setScan(await request<OptionsScan>('/options/scan', { method: 'POST' }));
+      setError('');
+    } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setScanning(false);
     }
   }
 
   useEffect(() => {
     load();
+    if (ONLINE) return undefined;
     const timer = window.setInterval(load, 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
+  const scanButton = (
+    <button className="primary" onClick={scanNow} disabled={scanning}>
+      <RefreshCw size={16} /> {scanning ? 'Scanning…' : 'Scan now'}
+    </button>
+  );
+
   if (!scan) {
+    if (ONLINE) {
+      return (
+        <section className="panel">
+          {error && <div className="alert">{error}</div>}
+          <p className="empty">Scan the watchlist for stocks that are going down and rank the richest puts to sell. Tickers and filters are set in Settings.</p>
+          {scanButton}
+        </section>
+      );
+    }
     return <section className="panel">{error ? <div className="alert">{error}</div> : <p className="empty">Loading latest scan…</p>}</section>;
   }
 
@@ -1070,7 +1075,7 @@ function PutSignalsPanel() {
           <span>
             {new Date(scan.generated_at).toLocaleString()} · {scan.universe.length} scanned · {dipping.length} going down · ranked by {scan.ranking_metric}
             {' '}
-            <button className="ghost" onClick={load} title="Reload latest scan"><RefreshCw size={14} /></button>
+            {ONLINE ? scanButton : <button className="ghost" onClick={load} title="Reload latest scan"><RefreshCw size={14} /></button>}
           </span>
         </div>
         {scan.candidates.length === 0 ? (
@@ -1106,7 +1111,7 @@ function PutSignalsPanel() {
         )}
       </section>
 
-      <section className="panel">
+      {!ONLINE && <section className="panel">
         <div className="section-head"><h4>Open short puts (IBKR)</h4><span>{scan.positions_status}</span></div>
         {scan.positions.length === 0 ? (
           <p className="empty">No open short puts reported.</p>
@@ -1127,7 +1132,7 @@ function PutSignalsPanel() {
             </tbody>
           </table>
         )}
-      </section>
+      </section>}
 
       <section className="panel">
         <div className="section-head"><h4>Stocks going down</h4><span>{dipping.length} of {scan.dips.length}</span></div>
@@ -1153,6 +1158,102 @@ function PutSignalsPanel() {
         {errors.length > 0 && <p className="history-note">{errors.length} ticker(s) had data errors: {errors.map(([ticker]) => ticker).join(', ')}</p>}
       </section>
     </div>
+  );
+}
+
+function OnlineSettings({ onSaved }: { onSaved: () => void }) {
+  const [settings, setSettings] = useState(loadSettings);
+  const [scanConfig, setScanConfig] = useState(() => JSON.stringify(loadScanConfig(), null, 2));
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  function run(action: () => void, done: string) {
+    try {
+      action();
+      setError('');
+      setMessage(done);
+    } catch (err) {
+      setMessage('');
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function saveKeys(event: React.FormEvent) {
+    event.preventDefault();
+    run(() => saveSettings({ ...settings, tradierToken: settings.tradierToken.trim(), fmpKey: settings.fmpKey.trim() }), 'API keys saved.');
+    onSaved();
+  }
+
+  function clearData() {
+    if (!window.confirm('Delete the watchlist, holdings, prices, signals, scans and API keys stored in this browser?')) return;
+    clearAll();
+    window.location.reload();
+  }
+
+  return (
+    <section className="panel settings-panel">
+      <h3>Data Sources</h3>
+      <p className="settings-note">
+        This page runs entirely in your browser. Prices and option chains come from Tradier; fundamentals come from Financial Modeling Prep
+        when you add a key, otherwise enter them by hand on each ticker. Keys and data are stored only in this browser and sent only to those services.
+      </p>
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="alert">{error}</div>}
+      <form className="stack-form" onSubmit={saveKeys}>
+        <label htmlFor="tradier-token">Tradier API token</label>
+        <input
+          id="tradier-token"
+          type="password"
+          autoComplete="off"
+          value={settings.tradierToken}
+          onChange={(event) => setSettings({ ...settings, tradierToken: event.target.value })}
+          placeholder="From web.tradier.com/user/api"
+        />
+        <label htmlFor="tradier-env">Tradier environment</label>
+        <select
+          id="tradier-env"
+          value={settings.tradierSandbox ? 'sandbox' : 'live'}
+          onChange={(event) => setSettings({ ...settings, tradierSandbox: event.target.value === 'sandbox' })}
+        >
+          <option value="sandbox">Sandbox token (15-minute delayed data)</option>
+          <option value="live">Live token (real-time data)</option>
+        </select>
+        <label htmlFor="fmp-key">Financial Modeling Prep API key (optional)</label>
+        <input
+          id="fmp-key"
+          type="password"
+          autoComplete="off"
+          value={settings.fmpKey}
+          onChange={(event) => setSettings({ ...settings, fmpKey: event.target.value })}
+          placeholder="For PE, growth, debt and cash flow"
+        />
+        <button className="primary">
+          <Save size={16} /> Save Keys
+        </button>
+      </form>
+
+      <h3>Put Scanner</h3>
+      <p className="settings-note">
+        Scans the watchlist plus <code>extra_tickers</code>. Same settings as <code>options/config.yaml</code>; ranking metric is
+        annualized_yield, iv_hv_ratio or blend (IV rank is not available from Tradier).
+      </p>
+      <div className="stack-form">
+        <textarea className="code-input" spellCheck={false} value={scanConfig} onChange={(event) => setScanConfig(event.target.value)} />
+        <div className="button-row">
+          <button className="primary" onClick={() => run(() => setScanConfig(JSON.stringify(saveScanConfig(scanConfig), null, 2)), 'Scanner settings saved.')}>
+            <Save size={16} /> Save Scanner Settings
+          </button>
+          <button className="secondary" onClick={() => setScanConfig(JSON.stringify(DEFAULT_SCAN_CONFIG, null, 2))}>
+            Reset to Defaults
+          </button>
+        </div>
+      </div>
+
+      <h3>Stored Data</h3>
+      <button className="secondary" onClick={clearData}>
+        <Trash2 size={16} /> Clear Data in This Browser
+      </button>
+    </section>
   );
 }
 

@@ -116,13 +116,22 @@ npm run build
 
 ### Online Dashboard (GitHub Pages)
 
-`.github/workflows/pages.yml` builds the frontend and publishes it to GitHub Pages on every push to `main` that changes `frontend/`. The page is at `https://zhicongchen.github.io/investment/`.
+`.github/workflows/pages.yml` builds the frontend in browser mode (`VITE_DATA_MODE=browser`) and publishes it to `https://zhicongchen.github.io/investment/` on every push to `main` that changes `frontend/`. Browser mode needs no backend, Moomoo, TWS or Ollama on your computer:
 
-It is only the user interface. Your data still comes from the backend on your own computer (SQLite, Moomoo OpenD, Ollama), so start the backend before opening the page. The page calls `http://127.0.0.1:8000/api` by default; change it under **Settings → Backend URL**, which is saved in your browser. The backend already allows requests from `https://zhicongchen.github.io`; add more origins with `CORS_ORIGINS` in `backend/.env`.
+- **Data sources**: prices, quotes and option chains with greeks come from [Tradier](https://tradier.com), called directly from the browser with your own API token. A sandbox token is free with a Tradier account and gives 15-minute delayed data; a live token gives real-time data. Fundamentals (PE, growth, debt, free cash flow) come from Financial Modeling Prep if you add an FMP key. Otherwise enter them by hand in the ticker panel.
+- **Storage**: the watchlist, holdings, price history, signals, scans and API keys are kept in your browser's local storage. Nothing is uploaded except the API calls to Tradier and FMP, and each browser or device has its own copy. **Settings → Clear Data in This Browser** removes all of it.
+- **Watchlist signals**: the same scoring as the backend (`backend/app/services/scoring.py`), computed from five years of Tradier daily bars. Prices are split-adjusted but not dividend-adjusted.
+- **Put signals**: **Scan now** runs the same dip checks and put ranking as `options/` over the watchlist plus `extra_tickers`. The scanner settings in Settings mirror `options/config.yaml`. Differences from the local scanner: IV rank isn't available, so rank by `annualized_yield`, `iv_hv_ratio` (put IV ÷ 30-day historical volatility) or `blend`. IBKR short-put advice isn't available either.
+- **Not available online**: Ollama analysis and the demo CSV import.
 
-One-time setup: in the repository on GitHub, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Then push to `main` or run the workflow from the **Actions** tab. GitHub Pages for a private repository needs a paid GitHub plan, and the published site is public. The page holds no data, but anyone with the link can load the interface.
+One-time setup: in the repository on GitHub, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Then push to `main` or run the workflow from the **Actions** tab. GitHub Pages on a private repository needs a paid GitHub plan, and the published page is public. It contains no data, though: everything you enter stays in your browser.
 
-Use Chrome, Edge or Firefox. Chrome may ask whether the site can access devices on your local network; allow it. Safari blocks HTTPS pages from calling `http://127.0.0.1`, so use the local `npm run dev` dashboard there.
+To try browser mode locally:
+
+```bash
+cd frontend
+VITE_DATA_MODE=browser npm run dev
+```
 
 ## Standalone IBKR Trading Bot
 

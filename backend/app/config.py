@@ -23,14 +23,3 @@ OPTIONS_REPORT_DIR = Path(os.getenv("OPTIONS_REPORT_DIR", str(BASE_DIR / "report
 MARKET_DATA_PROVIDER = os.getenv("MARKET_DATA_PROVIDER", "moomoo").strip().lower()
 MOOMOO_OPEND_HOST = os.getenv("MOOMOO_OPEND_HOST", "127.0.0.1").strip()
 MOOMOO_OPEND_PORT = int(os.getenv("MOOMOO_OPEND_PORT", "11111"))
-
-# Browser origins allowed to call the API: the local Vite dev server and the
-# GitHub Pages build of the dashboard. Add more with a comma-separated CORS_ORIGINS.
-CORS_ORIGINS = [
-    "http://127.0.0.1:5173",
-    "http://localhost:5173",
-    "http://127.0.0.1:5174",
-    "http://localhost:5174",
-    "https://zhicongchen.github.io",
-    *(origin.strip().rstrip("/") for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()),
-]

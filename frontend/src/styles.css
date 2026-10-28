@@ -538,14 +538,26 @@ dd {
   }
 }
 
-.api-base-form {
-  margin-bottom: 18px;
+.settings-panel h3:not(:first-child) {
+  margin-top: 26px;
 }
 
-.api-base-form label {
+.settings-panel label {
+  font-size: 13px;
   font-weight: 600;
 }
 
-.api-base-form .inline-form {
-  margin-bottom: 0;
+.settings-panel .button-row {
+  justify-content: flex-start;
+}
+
+.settings-note {
+  color: #475569;
+  margin: 0 0 12px;
+}
+
+.code-input {
+  min-height: 280px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }

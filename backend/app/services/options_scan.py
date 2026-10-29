@@ -7,6 +7,7 @@ CLI always show the same latest scan.
 """
 from __future__ import annotations
 
+import json
 import threading
 from typing import Any, Callable, Optional
 
@@ -26,6 +27,14 @@ _scan_lock = threading.Lock()
 
 class ScanBusyError(RuntimeError):
     pass
+
+
+def latest_scan() -> Optional[dict[str, Any]]:
+    """reports/options/latest.json: the most recent scan from the dashboard or the CLI."""
+    path = OPTIONS_REPORT_DIR / "latest.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def scan_defaults(watchlist: list[str]) -> dict[str, Any]:

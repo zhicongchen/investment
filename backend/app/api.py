@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date, timedelta
 from pathlib import Path
@@ -10,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import OPTIONS_REPORT_DIR
 from app.db import get_db
 from app.models import Company, FundamentalsSnapshot, Holding, PriceBar, Signal
 from app.providers.factory import market_data_provider
@@ -45,7 +43,7 @@ from app.services.analytics import (
     summary_metrics,
 )
 from app.services.refresh import ensure_company, recompute_signal, refresh_all, refresh_ticker
-from app.services.options_scan import ScanBusyError, dashboard_fundamentals, run_options_scan, scan_defaults
+from app.services.options_scan import ScanBusyError, dashboard_fundamentals, latest_scan, run_options_scan, scan_defaults
 from app.services.research import company_financial_analysis, statements_for
 from app.services.scoring import decode_list
 from app.services.ollama import (
@@ -389,8 +387,8 @@ def scan_options(payload: OptionsScanRequest, db: Session = Depends(get_db)) -> 
 
 @router.get("/options/latest")
 def latest_options_scan() -> dict:
-    """Latest put-selling scan written by `python -m options.cli scan|loop`."""
-    path = OPTIONS_REPORT_DIR / "latest.json"
-    if not path.exists():
+    """Latest put-selling scan, from the dashboard's Run scan or `python -m options.cli scan|loop`."""
+    scan = latest_scan()
+    if scan is None:
         raise HTTPException(status_code=404, detail="No put-selling scan yet. Use Run scan above, or: python -m options.cli scan")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return scan

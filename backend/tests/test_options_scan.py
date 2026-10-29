@@ -76,7 +76,7 @@ def test_scan_grades_requested_tickers_only_and_writes_reports(isolated):
     assert good["grade"] in {"A", "B"} and good["verdict"] == "BUY" and good["reasons"]
     assert payload["underlyings"]["GOOD"]["action"] == "BUY"
     assert not market.groups_requested
-    assert (tmp_path / "reports" / "latest.json").exists()
+    assert options_scan.latest_scan()["generated_at"] == payload["generated_at"]
     assert (tmp_path / "options.db").exists()
 
 

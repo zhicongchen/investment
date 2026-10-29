@@ -1,7 +1,16 @@
 // Port of backend/app/services/scoring.py.
-import { closeValue, latestClose, sum } from './analytics';
-import type { FundamentalsData } from './fmp';
-import type { Bar } from './tradier';
+import { closeValue, latestClose, sum, type Bar } from './analytics';
+
+export type FundamentalsData = {
+  date: string;
+  pe: number | null;
+  forward_pe: number | null;
+  eps_growth: number | null;
+  revenue_growth: number | null;
+  debt_to_equity: number | null;
+  free_cash_flow: number | null;
+  dividend_yield: number | null;
+};
 
 export type SignalDecision = {
   date: string;

@@ -46,6 +46,7 @@ Run its tests with `python -m pytest tests/options`.
 ## Project Layout
 
 - `options/` - Moomoo put-selling signal scanner (dip detection, put ranking, IBKR short-put advice, reports, scan history).
+- `pages/` - Daily Yahoo Finance data job for the GitHub Pages dashboard (`pages/watchlist.yaml` is its watchlist).
 - `shared/` - Code used by several packages: the Moomoo OpenD client, IBKR connection helpers, `.env` loading.
 - `backend/` - FastAPI app, SQLite models, market data provider, refresh jobs, signal rules, tests.
 - `frontend/` - React + Vite dashboard.
@@ -116,22 +117,32 @@ npm run build
 
 ### Online Dashboard (GitHub Pages)
 
-`.github/workflows/pages.yml` builds the frontend in browser mode (`VITE_DATA_MODE=browser`) and publishes it to `https://zhicongchen.github.io/investment/` on every push to `main` that changes `frontend/`. Browser mode needs no backend, Moomoo, TWS or Ollama on your computer:
+`.github/workflows/pages.yml` publishes the dashboard to `https://zhicongchen.github.io/investment/`. It needs no backend, Moomoo, TWS, Ollama or API key:
 
-- **Data sources**: prices, quotes and option chains with greeks come from [Tradier](https://tradier.com), called directly from the browser with your own API token. A sandbox token is free with a Tradier account and gives 15-minute delayed data; a live token gives real-time data. Fundamentals (PE, growth, debt, free cash flow) come from Financial Modeling Prep if you add an FMP key. Otherwise enter them by hand in the ticker panel.
-- **Storage**: the watchlist, holdings, price history, signals, scans and API keys are kept in your browser's local storage. Nothing is uploaded except the API calls to Tradier and FMP, and each browser or device has its own copy. **Settings → Clear Data in This Browser** removes all of it.
-- **Watchlist signals**: the same scoring as the backend (`backend/app/services/scoring.py`), computed from five years of Tradier daily bars. Prices are split-adjusted but not dividend-adjusted.
-- **Put signals**: **Scan now** runs the same dip checks and put ranking as `options/` over the watchlist plus `extra_tickers`. The scanner settings in Settings mirror `options/config.yaml`. Differences from the local scanner: IV rank isn't available, so rank by `annualized_yield`, `iv_hv_ratio` (put IV ÷ 30-day historical volatility) or `blend`. IBKR short-put advice isn't available either.
-- **Not available online**: Ollama analysis and the demo CSV import.
+1. **Data job**: `python -m pages.build` downloads five years of daily bars and basic fundamentals from Yahoo Finance (`yfinance`) for the tickers in `pages/watchlist.yaml`. It then runs the put scanner on Yahoo option chains with the thresholds in `options/config.yaml`, and writes JSON files that ship with the site.
+2. **Site**: the frontend is built in browser mode (`VITE_DATA_MODE=browser`) and reads those files. Signals, metrics and charts are computed in the browser with the same rules as the backend.
 
-One-time setup: in the repository on GitHub, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Then push to `main` or run the workflow from the **Actions** tab. GitHub Pages on a private repository needs a paid GitHub plan, and the published page is public. It contains no data, though: everything you enter stays in your browser.
+The workflow runs every weekday at 21:37 UTC (after the US close all year), on every push to `main` that touches `frontend/`, `pages/`, `options/` or `shared/`, and on demand from the **Actions** tab. To change the watchlist, edit `pages/watchlist.yaml` on GitHub; the commit rebuilds the site.
+
+Differences from the local version:
+
+- **Data**: daily closes only, as of the last run. Yahoo Finance is an unofficial source and occasionally fails or rate-limits. Tickers it could not fetch are listed under **Settings**.
+- **Put signals**: Yahoo has no greeks or IV rank, so delta is estimated with Black-Scholes (marked `*`) and IV rank shows n/a. Rank by `annualized_yield`, `iv_hv_ratio` or `blend`. When Yahoo has no bid/ask for a contract, its last trade price stands in for both, and the scan says how many times that happened. IBKR short-put advice isn't available.
+- **Your data**: holdings and manually entered fundamentals are stored only in your browser (**Settings → Clear Data in This Browser** removes them). They are never uploaded.
+- **Not available**: adding tickers from the page, Ollama analysis and the demo CSV import.
+
+One-time setup: in the repository on GitHub, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Then run the workflow from the **Actions** tab. GitHub Pages on a private repository needs a paid GitHub plan. The published site is public: anyone with the link can see the watchlist, prices and put scan, but not your holdings.
 
 To try browser mode locally:
 
 ```bash
+python -m pip install -r pages/requirements.txt
+python -m pages.build --out frontend/public/data
 cd frontend
 VITE_DATA_MODE=browser npm run dev
 ```
+
+Run its tests with `python -m pytest tests/pages`.
 
 ## Standalone IBKR Trading Bot
 

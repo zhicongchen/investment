@@ -32,3 +32,6 @@ frontend/dist/
 
 # Generated or archived reports
 reports/
+
+# Data published by pages/build.py (built in CI)
+frontend/public/data/

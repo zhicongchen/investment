@@ -1,0 +1,12 @@
+# Tickers for the online dashboard (GitHub Pages). Edit this file on GitHub:
+# the site rebuilds on every push to main and once a day after the US close.
+# Put-scanner thresholds come from options/config.yaml (its extra_tickers are scanned too).
+tickers:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  - TSLA
+  - QQQ

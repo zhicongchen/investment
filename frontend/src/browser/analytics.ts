@@ -1,13 +1,21 @@
-// Port of backend/app/services/analytics.py over bars kept in the browser.
-import type { Bar } from './tradier';
-
+// Port of backend/app/services/analytics.py over the daily bars published by pages/build.py.
 export const BENCHMARK_TICKER = 'SPY';
 const TRADING_DAYS = 252;
+
+export type Bar = {
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  adjusted_close: number | null;
+};
 
 export type HoldingInput = { ticker: string; shares: number; target_allocation: number };
 
 export function closeValue(bar: Bar): number | null {
-  return bar.close;
+  return bar.adjusted_close ?? bar.close;
 }
 
 function simpleMovingAverage(values: (number | null)[], window: number): (number | null)[] {
@@ -99,7 +107,7 @@ export function enrichPricePoints(bars: Bar[]) {
     return {
       date: bar.date,
       close: bar.close,
-      adjusted_close: null,
+      adjusted_close: bar.adjusted_close,
       volume: bar.volume,
       ma20: ma20[index],
       ma50: ma50[index],

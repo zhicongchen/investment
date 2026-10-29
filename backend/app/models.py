@@ -22,6 +22,7 @@ class Company(Base):
     prices: Mapped[list["PriceBar"]] = relationship(back_populates="company", cascade="all, delete-orphan")
     fundamentals: Mapped[list["FundamentalsSnapshot"]] = relationship(back_populates="company", cascade="all, delete-orphan")
     signals: Mapped[list["Signal"]] = relationship(back_populates="company", cascade="all, delete-orphan")
+    statements: Mapped[list["FinancialStatement"]] = relationship(back_populates="company", cascade="all, delete-orphan")
 
 
 class PriceBar(Base):
@@ -57,6 +58,54 @@ class FundamentalsSnapshot(Base):
     dividend_yield: Mapped[Optional[float]] = mapped_column(Float)
 
     company: Mapped[Company] = relationship(back_populates="fundamentals")
+
+
+class FinancialStatement(Base):
+    """One reported period (annual or quarterly) of income statement, balance sheet and cash flow lines.
+
+    Field conventions match app.providers.base.FinancialStatementData.
+    """
+
+    __tablename__ = "financial_statements"
+    __table_args__ = (UniqueConstraint("ticker", "period", "fiscal_date", name="uq_statement_ticker_period_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ticker: Mapped[str] = mapped_column(ForeignKey("companies.ticker"), index=True)
+    period: Mapped[str] = mapped_column(String(16))
+    fiscal_date: Mapped[date] = mapped_column(Date, index=True)
+    revenue: Mapped[Optional[float]] = mapped_column(Float)
+    cost_of_revenue: Mapped[Optional[float]] = mapped_column(Float)
+    gross_profit: Mapped[Optional[float]] = mapped_column(Float)
+    operating_income: Mapped[Optional[float]] = mapped_column(Float)
+    ebitda: Mapped[Optional[float]] = mapped_column(Float)
+    interest_expense: Mapped[Optional[float]] = mapped_column(Float)
+    pretax_income: Mapped[Optional[float]] = mapped_column(Float)
+    income_tax: Mapped[Optional[float]] = mapped_column(Float)
+    net_income: Mapped[Optional[float]] = mapped_column(Float)
+    diluted_eps: Mapped[Optional[float]] = mapped_column(Float)
+    operating_cash_flow: Mapped[Optional[float]] = mapped_column(Float)
+    capital_expenditure: Mapped[Optional[float]] = mapped_column(Float)
+    free_cash_flow: Mapped[Optional[float]] = mapped_column(Float)
+    dividends_paid: Mapped[Optional[float]] = mapped_column(Float)
+    share_repurchases: Mapped[Optional[float]] = mapped_column(Float)
+    stock_based_compensation: Mapped[Optional[float]] = mapped_column(Float)
+    depreciation: Mapped[Optional[float]] = mapped_column(Float)
+    diluted_shares: Mapped[Optional[float]] = mapped_column(Float)
+    shares_outstanding: Mapped[Optional[float]] = mapped_column(Float)
+    total_assets: Mapped[Optional[float]] = mapped_column(Float)
+    current_assets: Mapped[Optional[float]] = mapped_column(Float)
+    cash_and_investments: Mapped[Optional[float]] = mapped_column(Float)
+    receivables: Mapped[Optional[float]] = mapped_column(Float)
+    inventory: Mapped[Optional[float]] = mapped_column(Float)
+    total_liabilities: Mapped[Optional[float]] = mapped_column(Float)
+    current_liabilities: Mapped[Optional[float]] = mapped_column(Float)
+    total_debt: Mapped[Optional[float]] = mapped_column(Float)
+    long_term_debt: Mapped[Optional[float]] = mapped_column(Float)
+    shareholders_equity: Mapped[Optional[float]] = mapped_column(Float)
+    retained_earnings: Mapped[Optional[float]] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    company: Mapped[Company] = relationship(back_populates="statements")
 
 
 class Holding(Base):

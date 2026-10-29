@@ -4,8 +4,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.models import Company, PriceBar, Signal
-from app.providers.base import CompanyProfile, FundamentalsData, MarketDataProvider, PriceBarData
+from app.models import Company, FinancialStatement, PriceBar, Signal
+from app.providers.base import CompanyProfile, FinancialStatementData, FundamentalsData, MarketDataProvider, PriceBarData
 from app.services.refresh import ensure_company, refresh_all, refresh_ticker
 
 
@@ -75,3 +75,40 @@ def test_refresh_all_reports_failures_without_stopping():
     assert refreshed == ["TST"]
     assert failed == {}
 
+
+
+class StatementsProvider(FakeProvider):
+    def get_financial_statements(self, ticker: str) -> list[FinancialStatementData]:
+        return [
+            FinancialStatementData(fiscal_date=date(2024, 12, 31), period="annual", revenue=100.0, net_income=20.0, total_assets=300.0),
+            FinancialStatementData(fiscal_date=date(2025, 3, 31), period="quarterly", revenue=27.0, net_income=6.0, total_assets=310.0),
+        ]
+
+
+class BrokenStatementsProvider(FakeProvider):
+    def get_financial_statements(self, ticker: str) -> list[FinancialStatementData]:
+        raise RuntimeError("statements endpoint down")
+
+
+def test_refresh_ticker_upserts_financial_statements():
+    db = session()
+
+    refresh_ticker(db, "TST", StatementsProvider())
+    refresh_ticker(db, "TST", StatementsProvider())
+    db.commit()
+
+    statements = db.scalars(select(FinancialStatement).where(FinancialStatement.ticker == "TST")).all()
+    assert len(statements) == 2
+    annual = next(row for row in statements if row.period == "annual")
+    assert annual.revenue == 100.0
+    assert annual.total_assets == 300.0
+
+
+def test_statement_failure_does_not_fail_price_refresh():
+    db = session()
+
+    refresh_ticker(db, "TST", BrokenStatementsProvider())
+    db.commit()
+
+    assert len(db.scalars(select(PriceBar).where(PriceBar.ticker == "TST")).all()) == 220
+    assert db.scalars(select(FinancialStatement)).all() == []

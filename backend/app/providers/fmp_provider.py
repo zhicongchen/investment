@@ -2,12 +2,58 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import logging
 from math import isfinite
 from typing import Any, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from app.providers.base import CompanyProfile, FundamentalsData, MarketDataProvider, PriceBarData
+from app.providers.base import (
+    STATEMENT_FIELDS,
+    CompanyProfile,
+    FinancialStatementData,
+    FundamentalsData,
+    MarketDataProvider,
+    PriceBarData,
+)
+
+logger = logging.getLogger(__name__)
+
+# Statement field -> FMP keys (stable and legacy v3 spellings), first match wins.
+_STATEMENT_KEYS: dict[str, tuple[str, ...]] = {
+    "revenue": ("revenue",),
+    "cost_of_revenue": ("costOfRevenue",),
+    "gross_profit": ("grossProfit",),
+    "operating_income": ("operatingIncome", "ebit"),
+    "ebitda": ("ebitda",),
+    "interest_expense": ("interestExpense",),
+    "pretax_income": ("incomeBeforeTax",),
+    "income_tax": ("incomeTaxExpense",),
+    "net_income": ("netIncome",),
+    "diluted_eps": ("epsDiluted", "epsdiluted"),
+    "operating_cash_flow": ("operatingCashFlow", "netCashProvidedByOperatingActivities"),
+    "capital_expenditure": ("capitalExpenditure", "investmentsInPropertyPlantAndEquipment"),
+    "free_cash_flow": ("freeCashFlow",),
+    "dividends_paid": ("commonDividendsPaid", "netDividendsPaid", "dividendsPaid"),
+    "share_repurchases": ("commonStockRepurchased",),
+    "stock_based_compensation": ("stockBasedCompensation",),
+    "depreciation": ("depreciationAndAmortization",),
+    "diluted_shares": ("weightedAverageShsOutDil",),
+    "shares_outstanding": ("weightedAverageShsOut",),
+    "total_assets": ("totalAssets",),
+    "current_assets": ("totalCurrentAssets",),
+    "cash_and_investments": ("cashAndShortTermInvestments", "cashAndCashEquivalents"),
+    "receivables": ("netReceivables", "accountsReceivables"),
+    "inventory": ("inventory",),
+    "total_liabilities": ("totalLiabilities",),
+    "current_liabilities": ("totalCurrentLiabilities",),
+    "total_debt": ("totalDebt",),
+    "long_term_debt": ("longTermDebt",),
+    "shareholders_equity": ("totalStockholdersEquity", "totalEquity"),
+    "retained_earnings": ("retainedEarnings",),
+}
+_OUTFLOW_FIELDS = {"interest_expense", "capital_expenditure", "dividends_paid", "share_repurchases"}
+_STATEMENT_ENDPOINTS = ("income-statement", "balance-sheet-statement", "cash-flow-statement")
 
 
 def _number(value: Any) -> Optional[float]:
@@ -90,6 +136,36 @@ class FMPProvider(MarketDataProvider):
                 or _first_number(ratios, "dividendYieldTTM", "dividendYield")
             ),
         )
+
+    def get_financial_statements(self, ticker: str) -> list[FinancialStatementData]:
+        symbol = ticker.upper().strip()
+        statements: list[FinancialStatementData] = []
+        for period, fmp_period, limit in (("annual", "annual", "5"), ("quarterly", "quarter", "8")):
+            rows: dict[date, dict[str, Any]] = {}
+            for endpoint in _STATEMENT_ENDPOINTS:
+                try:
+                    payload = self._get(endpoint, {"symbol": symbol, "period": fmp_period, "limit": limit})
+                except Exception as exc:
+                    # Quarterly statements need a paid FMP plan; annual alone is still useful.
+                    logger.info("FMP %s %s (%s) unavailable: %s", endpoint, symbol, period, exc)
+                    continue
+                for item in payload if isinstance(payload, list) else []:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        fiscal_date = date.fromisoformat(str(item.get("date"))[:10])
+                    except ValueError:
+                        continue
+                    rows.setdefault(fiscal_date, {}).update(item)
+            for fiscal_date in sorted(rows):
+                values: dict[str, Optional[float]] = {}
+                for field in STATEMENT_FIELDS:
+                    value = _first_number(rows[fiscal_date], *_STATEMENT_KEYS[field])
+                    values[field] = abs(value) if value is not None and field in _OUTFLOW_FIELDS else value
+                if values["revenue"] is None and values["total_assets"] is None:
+                    continue
+                statements.append(FinancialStatementData(fiscal_date=fiscal_date, period=period, **values))
+        return statements
 
     def _first(self, endpoint: str, symbol: str) -> dict[str, Any]:
         payload = self._get(endpoint, {"symbol": symbol})

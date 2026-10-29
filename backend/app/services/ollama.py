@@ -19,9 +19,10 @@ from app.services.analytics import (
     prices_for,
     summary_metrics,
 )
+from app.services.research import company_financial_analysis
 from app.services.scoring import decode_list
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 ANALYSIS_TYPE = "deep_analysis"
 
 
@@ -170,6 +171,7 @@ def build_ticker_context(db: Session, ticker: str) -> dict[str, Any]:
         "holding": _holding_snapshot(holding),
         "technical_snapshot": _jsonable(latest_technical),
         "recent_prices": recent_prices,
+        "financial_analysis": _analysis_snapshot(company_financial_analysis(db, ticker, prices, benchmark_prices)),
     }
 
 
@@ -191,6 +193,7 @@ def build_portfolio_context(db: Session) -> dict[str, Any]:
                 "name": company.name,
                 "metrics": _jsonable(summary_metrics(prices, benchmark_prices)),
                 "signal": _signal_snapshot(latest_signal(db, company.ticker)),
+                "verdict": _verdict_snapshot(company_financial_analysis(db, company.ticker, prices, benchmark_prices)),
             }
         )
 
@@ -208,16 +211,20 @@ def build_portfolio_context(db: Session) -> dict[str, Any]:
 
 def build_ticker_prompt(context: dict[str, Any]) -> str:
     return _prompt(
-        "Create a deep investment research memo for the selected ticker.",
+        "Create a deep investment research memo for the selected ticker. The financial_analysis block holds a "
+        "rules-based verdict built from reported statements (ratios, Piotroski F-score, Altman Z-score, DCF and "
+        "reverse DCF); state whether the evidence supports that verdict and cite the numbers behind it.",
         context,
         [
+            "Verdict and Conviction",
             "Thesis",
-            "Supporting Data",
-            "Valuation and Fundamental Quality",
+            "Financial Health (profitability, balance sheet, cash-flow quality)",
+            "Growth",
+            "Valuation and Margin of Safety",
             "Technical Context",
             "Portfolio Fit",
-            "Risks",
-            "Watch Items",
+            "Risks and Red Flags",
+            "What Would Change the View",
             "Uncertainty and Missing Data",
         ],
     )
@@ -268,6 +275,42 @@ def _signal_snapshot(signal: Optional[Signal]) -> Optional[dict[str, Any]]:
         "confidence": signal.confidence,
         "reasons": decode_list(signal.reasons),
         "risk_flags": decode_list(signal.risk_flags),
+    }
+
+
+def _analysis_snapshot(analysis: dict[str, Any]) -> dict[str, Any]:
+    """Compact the dashboard analysis for the prompt: values and scores, not display metadata."""
+    return {
+        "statement_date": analysis["statement_date"],
+        "statement_basis": analysis["statement_basis"],
+        "composite_score": analysis["composite_score"],
+        "data_coverage": analysis["data_coverage"],
+        "recommendation": analysis["recommendation"],
+        "valuation": analysis["valuation"],
+        "pillars": {
+            pillar["key"]: {
+                "score": pillar["score"],
+                "metrics": {metric["key"]: metric["value"] for metric in pillar["metrics"] if metric["value"] is not None},
+            }
+            for pillar in analysis["pillars"]
+        },
+        "piotroski_f_score": (
+            f"{analysis['piotroski']['score']}/{analysis['piotroski']['max']}" if analysis["piotroski"] else None
+        ),
+        "altman_z": analysis["altman_z"],
+        "roic_minus_wacc": analysis["economic_spread"],
+        "annual_trend": analysis["annual"],
+        "red_flags": analysis["flags"],
+        "warnings": analysis["warnings"],
+    }
+
+
+def _verdict_snapshot(analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "action": analysis["recommendation"]["action"],
+        "conviction": analysis["recommendation"]["conviction"],
+        "composite_score": analysis["composite_score"],
+        "margin_of_safety": analysis["valuation"]["margin_of_safety"],
     }
 
 

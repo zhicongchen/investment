@@ -9,7 +9,7 @@ ib_async==1.0.3
 moomoo-api>=10.0
 
 # Shared market data
-yfinance==0.2.51
+yfinance>=0.2.58
 
 # Quant research system
 pandas>=2.2.0

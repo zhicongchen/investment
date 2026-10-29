@@ -6,6 +6,9 @@
     python -m options.cli positions   # advice on open IBKR short puts only
     python -m options.cli loop        # scan every N minutes during US market hours
     python -m options.cli history     # recent scans stored in data/options.db
+
+Without OpenD, scan Yahoo Finance data instead (delayed quotes, no IV rank):
+    python -m options.cli scan --source yahoo --tickers AAPL MSFT NVDA --all-tickers --no-positions
 """
 from __future__ import annotations
 
@@ -17,10 +20,12 @@ from pathlib import Path
 from typing import Optional
 
 from options.config import OptionsConfig, load_config
+from options.fundamentals import fundamentals_lookup
 from options.positions import fetch_short_puts
 from options.report import to_console, write_reports
 from options.scanner import ET, run_positions, run_scan
 from options.store import CachedMoomooClient, OptionsStore
+from options.yahoo import YahooOptionsClient, next_earnings_date
 from shared.ibkr import IbkrConnectionError
 from shared.moomoo import MoomooClient, MoomooError
 
@@ -34,6 +39,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--any-time", action="store_true", help="loop even outside US market hours")
     parser.add_argument("--refresh-cache", action="store_true", help="re-download daily bars and option chains")
     parser.add_argument("--limit", type=int, default=20, help="rows for the history command")
+    parser.add_argument("--source", choices=["moomoo", "yahoo"], default="moomoo", help="market data for scan/loop")
+    parser.add_argument("--tickers", nargs="+", default=None, help="scan these tickers (added to the watchlist universe)")
+    parser.add_argument("--all-tickers", action="store_true", help="look for puts on every ticker, not only dipping ones")
+    parser.add_argument(
+        "--fundamentals", choices=["dashboard", "live", "off"], default=None, help="where verdicts for the underlyings come from"
+    )
     args = parser.parse_args(argv)
 
     for stream in (sys.stdout, sys.stderr):
@@ -43,13 +54,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = load_config(args.config)
     if args.no_positions:
         config.ibkr.enabled = False
+    if args.tickers:
+        config.watchlist.extra_tickers = sorted({*config.watchlist.extra_tickers, *(t.strip().upper() for t in args.tickers)})
+    if args.all_tickers:
+        config.dip.required = False
+    if args.fundamentals:
+        config.edge.fundamentals = args.fundamentals
     try:
         if args.command == "check":
             return check(config)
         if args.command == "groups":
             return groups(config)
         if args.command == "scan":
-            return scan(config, refresh_cache=args.refresh_cache)
+            return scan(config, refresh_cache=args.refresh_cache, source_name=args.source)
         if args.command == "positions":
             return positions(config)
         if args.command == "history":
@@ -59,23 +76,36 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.interval or config.loop.interval_minutes,
             market_hours_only=config.loop.market_hours_only and not args.any_time,
             refresh_cache=args.refresh_cache,
+            source_name=args.source,
         )
     except MoomooError as exc:
         print(f"Moomoo error: {exc}", file=sys.stderr)
         return 2
 
 
-def scan(config: OptionsConfig, client: Optional[MoomooClient] = None, refresh_cache: bool = False) -> int:
+def scan(
+    config: OptionsConfig, client: Optional[object] = None, refresh_cache: bool = False, source_name: str = "moomoo"
+) -> int:
     owned = client is None
-    client = client or MoomooClient(config.opend.host, config.opend.port)
+    client = client or _client(config, source_name)
     store = OptionsStore(config.storage.db_path)
     source = _data_source(config, client, store, refresh_cache)
     try:
         client.connect()
-        result = run_scan(config, source, fetch_positions=fetch_short_puts)
+        result = run_scan(
+            config,
+            source,
+            fetch_positions=fetch_short_puts,
+            earnings=getattr(client, "next_earnings", None) or next_earnings_date,
+            fundamentals=fundamentals_lookup(config.edge.fundamentals) if config.edge.enabled else None,
+        )
     finally:
         if owned:
             client.close()
+    if getattr(client, "used_last_trade", False):
+        result.warnings.append(
+            "Market closed or quotes missing: some option prices are last trades, not live bid/ask. Re-check before trading."
+        )
     store.save_scan(result)
     paths = write_reports(result, config.report.path)
     print(to_console(result))
@@ -86,7 +116,13 @@ def scan(config: OptionsConfig, client: Optional[MoomooClient] = None, refresh_c
     return 0
 
 
-def _data_source(config: OptionsConfig, client: MoomooClient, store: OptionsStore, refresh_cache: bool) -> object:
+def _client(config: OptionsConfig, source_name: str) -> object:
+    if source_name == "yahoo":
+        return YahooOptionsClient()
+    return MoomooClient(config.opend.host, config.opend.port)
+
+
+def _data_source(config: OptionsConfig, client: object, store: OptionsStore, refresh_cache: bool) -> object:
     if not config.storage.cache_enabled:
         return client
     return CachedMoomooClient(client, store, refresh=refresh_cache)
@@ -181,9 +217,15 @@ def check(config: OptionsConfig) -> int:
     return 0 if ok else 1
 
 
-def loop(config: OptionsConfig, interval_minutes: int, market_hours_only: bool = True, refresh_cache: bool = False) -> int:
+def loop(
+    config: OptionsConfig,
+    interval_minutes: int,
+    market_hours_only: bool = True,
+    refresh_cache: bool = False,
+    source_name: str = "moomoo",
+) -> int:
     print(f"Scanning every {interval_minutes} min" + (" during US market hours" if market_hours_only else "") + ". Ctrl+C to stop.")
-    client = MoomooClient(config.opend.host, config.opend.port)
+    client = _client(config, source_name)
     try:
         while True:
             now = datetime.now(ET)

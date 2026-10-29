@@ -790,6 +790,107 @@ td span.score-chip {
   font-size: 13px;
 }
 
+.wide-row {
+  grid-column: 1 / -1;
+}
+
+.scan-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.scan-form label {
+  display: grid;
+  gap: 5px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.scan-form .scan-tickers {
+  flex: 1 1 280px;
+}
+
+.scan-form label.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.scan-form select,
+.scan-form input:not([type="checkbox"]) {
+  padding: 8px 10px;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.put-reasons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.put-reason {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.put-reason > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.put-reason .signal {
+  min-width: 34px;
+  height: 22px;
+}
+
+.put-reason small {
+  color: #64748b;
+}
+
+.put-reason ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  line-height: 1.4;
+}
+
+.rejections {
+  margin-top: 16px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.rejections h4 {
+  margin: 0 0 6px;
+}
+
+.rejections ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+
 @media (max-width: 980px) {
   .shell {
     grid-template-columns: 1fr;

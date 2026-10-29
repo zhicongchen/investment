@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -157,6 +157,14 @@ class PortfolioAnalytics(BaseModel):
 
 class DemoImportResult(BaseModel):
     imported: list[str]
+
+
+class OptionsScanRequest(BaseModel):
+    tickers: list[str] = Field(min_length=1, max_length=30)
+    source: Literal["auto", "moomoo", "yahoo"] = "auto"
+    only_dipping: bool = False
+    include_positions: bool = False
+    fundamentals: Literal["dashboard", "off"] = "dashboard"
 
 
 class OllamaStatus(BaseModel):

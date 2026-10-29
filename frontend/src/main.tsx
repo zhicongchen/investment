@@ -330,6 +330,30 @@ type OptionsScan = {
   exposure: Record<string, { contracts: number; collateral: number }>;
   errors: Record<string, string>;
   warnings: string[];
+  rejections?: Record<string, Record<string, number>>;
+  underlyings?: Record<string, { action: string; conviction: string; composite_score: number | null; fair_value: number | null; buy_below: number | null }>;
+  earnings?: Record<string, string | null>;
+  source?: string;
+};
+
+type OptionsDefaults = {
+  tickers: string[];
+  ranking_metric: string;
+  min_dte: number;
+  max_dte: number;
+  delta_min: number;
+  delta_max: number;
+  earnings: string;
+  positions_enabled: boolean;
+  moomoo_available: boolean;
+};
+
+type ScanForm = {
+  tickers: string;
+  source: 'auto' | 'moomoo' | 'yahoo';
+  onlyDipping: boolean;
+  includePositions: boolean;
+  useFundamentals: boolean;
 };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -1392,44 +1416,123 @@ const ADVICE_CLASS: Record<string, string> = {
 
 function PutSignalsPanel() {
   const [scan, setScan] = useState<OptionsScan | null>(null);
+  const [defaults, setDefaults] = useState<OptionsDefaults | null>(null);
+  const [form, setForm] = useState<ScanForm>({ tickers: '', source: 'auto', onlyDipping: false, includePositions: false, useFundamentals: true });
+  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   async function load() {
     try {
       setScan(await request<OptionsScan>('/options/latest'));
-      setError('');
+      setNotice('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setNotice(err instanceof Error && err.message.includes('No put-selling scan') ? 'No scan yet: choose tickers and press Run scan.' : '');
     }
   }
 
   useEffect(() => {
     load();
+    request<OptionsDefaults>('/options/defaults')
+      .then((value) => {
+        setDefaults(value);
+        setForm((current) => ({ ...current, tickers: current.tickers || value.tickers.join(' '), includePositions: value.positions_enabled && value.moomoo_available }));
+      })
+      .catch(() => setDefaults(null));
     const timer = window.setInterval(load, 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
+  async function runScan(event: React.FormEvent) {
+    event.preventDefault();
+    const tickers = form.tickers.split(/[\s,]+/).map((ticker) => ticker.trim().toUpperCase()).filter(Boolean);
+    if (tickers.length === 0) {
+      setError('Enter at least one ticker.');
+      return;
+    }
+    setScanning(true);
+    setError('');
+    try {
+      setScan(
+        await request<OptionsScan>('/options/scan', {
+          method: 'POST',
+          body: JSON.stringify({
+            tickers,
+            source: form.source,
+            only_dipping: form.onlyDipping,
+            include_positions: form.includePositions,
+            fundamentals: form.useFundamentals ? 'dashboard' : 'off',
+          }),
+        }),
+      );
+      setNotice('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Scan failed');
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  const scanForm = (
+    <section className="panel wide-row">
+      <form className="scan-form" onSubmit={runScan}>
+        <label className="scan-tickers">
+          Tickers
+          <input value={form.tickers} onChange={(e) => setForm({ ...form, tickers: e.target.value })} placeholder="GOOGL MSFT AMZN INTC" />
+        </label>
+        <label>
+          Data
+          <select value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value as ScanForm['source'] })}>
+            <option value="auto">Auto {defaults ? (defaults.moomoo_available ? '(Moomoo)' : '(Yahoo)') : ''}</option>
+            <option value="moomoo">Moomoo OpenD</option>
+            <option value="yahoo">Yahoo (delayed)</option>
+          </select>
+        </label>
+        <label className="check"><input type="checkbox" checked={form.onlyDipping} onChange={(e) => setForm({ ...form, onlyDipping: e.target.checked })} /> Only stocks going down</label>
+        <label className="check"><input type="checkbox" checked={form.useFundamentals} onChange={(e) => setForm({ ...form, useFundamentals: e.target.checked })} /> Check fundamentals</label>
+        <label className="check"><input type="checkbox" checked={form.includePositions} onChange={(e) => setForm({ ...form, includePositions: e.target.checked })} /> My IBKR short puts</label>
+        <button className="primary" disabled={scanning}>
+          <RefreshCw size={16} className={scanning ? 'spin' : ''} /> {scanning ? 'Scanning…' : 'Run scan'}
+        </button>
+      </form>
+      <p className="history-note">
+        {scanning
+          ? 'Fetching prices, option chains, earnings dates and fundamentals. Yahoo takes seconds per ticker; Moomoo is rate-limited and can take a few minutes.'
+          : defaults
+            ? `Puts ${defaults.min_dte}-${defaults.max_dte} days out, delta ${defaults.delta_min} to ${defaults.delta_max}, earnings before expiry: ${defaults.earnings}. Thresholds live in options/config.yaml.`
+            : 'Graded on premium richness, odds, earnings risk, the quality and price of the stock, time to expiry and liquidity.'}
+      </p>
+      {error && <div className="alert compact-alert">{error}</div>}
+    </section>
+  );
+
   if (!scan) {
-    return <section className="panel">{error ? <div className="alert">{error}</div> : <p className="empty">Loading latest scan…</p>}</section>;
+    return (
+      <div className="grid">
+        {scanForm}
+        <section className="panel wide-row">{notice ? <p className="empty">{notice}</p> : <p className="empty">Loading latest scan…</p>}</section>
+      </div>
+    );
   }
 
   const dipping = scan.dips.filter((row) => row.is_dip);
   const errors = Object.entries(scan.errors);
+  const rejected = Object.entries(scan.rejections ?? {}).filter(([ticker]) => !scan.candidates.some((put) => put.ticker === ticker));
   return (
     <div className="grid">
-      {error && <div className="alert">{error}</div>}
-      {scan.warnings.map((warning) => <div className="notice" key={warning}>{warning}</div>)}
-      <section className="panel wide">
+      {scanForm}
+      {scan.warnings.map((warning) => <div className="notice wide-row" key={warning}>{warning}</div>)}
+      <section className="panel wide-row">
         <div className="section-head">
           <h4>Top puts to sell</h4>
           <span>
-            {new Date(scan.generated_at).toLocaleString()} · {scan.universe.length} scanned · {dipping.length} going down · ranked by {scan.ranking_metric}
+            {new Date(scan.generated_at).toLocaleString()} · {scan.source ? `${scan.source} · ` : ''}{scan.universe.length} scanned · {dipping.length} going down · ranked by {scan.ranking_metric}
             {' '}
             <button className="ghost" onClick={load} title="Reload latest scan"><RefreshCw size={14} /></button>
           </span>
         </div>
         {scan.candidates.length === 0 ? (
-          <p className="empty">No puts passed the filters in the latest scan.</p>
+          <p className="empty">No puts passed the filters in this scan. See why below.</p>
         ) : (
           <table>
             <thead>
@@ -1466,6 +1569,35 @@ function PutSignalsPanel() {
               ))}
             </tbody>
           </table>
+        )}
+        {scan.candidates.some((put) => put.grade) && (
+          <div className="put-reasons">
+            {scan.candidates.slice(0, 12).map((put, index) => (
+              <div className="put-reason" key={put.code}>
+                <div>
+                  <span className={`signal ${GRADE_CLASS[put.grade ?? ''] ?? 'none'}`}>{put.grade ?? '-'}</span>
+                  <strong>{index + 1}. {put.ticker} {put.strike}P {put.expiry}</strong>
+                  <small>score {num(put.put_score, 0)} · {pct(put.prob_profit)} PoP · {pct(put.annualized_yield)} ann.</small>
+                </div>
+                <ul>
+                  {put.reasons.map((text) => <li key={text} className="positive">✔ {text}</li>)}
+                  {put.cautions.map((text) => <li key={text} className="negative">⚠ {text}</li>)}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+        {rejected.length > 0 && (
+          <div className="rejections">
+            <h4>Why some tickers have no puts</h4>
+            <ul>
+              {rejected.map(([ticker, reasons]) => (
+                <li key={ticker}>
+                  <strong>{ticker}</strong>: {Object.entries(reasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${reason} (${count})`).join(', ') || 'no contracts returned'}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </section>
 

@@ -46,7 +46,7 @@ Options: `--no-positions` skips TWS, `--interval 15` changes the loop period, `-
 
 Every scan is stored in `data/options.db` (`scans`, `scan_dips`, `scan_candidates`: each ranked put with its yield, IV, IV rank and IV/HV). That history is what you use to compare ranking metrics later, e.g. `SELECT ticker, strike, expiry, annualized_yield, iv_rank FROM scan_candidates WHERE rank <= 5`. The same database holds a per-day cache of daily bars and option-chain listings, so only the first scan of the day pays for those rate-limited requests; later loop iterations only fetch live quotes. `reports/options/latest.*` is rewritten every scan, and a timestamped copy is kept only when the ranked puts or position actions change.
 
-The dashboard's **Put Signals** tab shows `reports/options/latest.json` and reloads every minute while the backend is running.
+The dashboard's **Put Signals** tab runs the same scan from the browser: enter tickers (pre-filled with your dashboard watchlist), pick the data source (Auto uses Moomoo OpenD when it is running, otherwise delayed Yahoo data), choose whether to scan only stocks that are going down, check fundamentals and include your IBKR short puts, then press **Run scan** (`POST /api/options/scan`). Results show each put's grade, score, odds, IV vs realized, earnings and the stock's verdict, the reasons and cautions behind the top 12, and why tickers without puts were filtered out. Fundamentals come from the dashboard database; tickers it has no statements for are analyzed on the fly. Every scan is also saved to the scan history and to `reports/options/latest.*`, which the tab reloads every minute, so CLI and browser scans show up in the same place.
 
 Notes and limits:
 

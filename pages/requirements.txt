@@ -1,5 +1,0 @@
-# Only what the daily data job needs (the root requirements.txt pulls in the whole local stack).
-# yfinance is unpinned on purpose: old versions stop working when Yahoo changes its API.
-yfinance
-pandas
-PyYAML

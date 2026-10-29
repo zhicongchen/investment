@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers for the live financial analysis and put scan (space separated)"
+        default: "GOOGL MSFT AMZN INTC"
+  # Live put scans on weekdays during market hours (cron is UTC). 14:47 UTC is 10:47 ET in
+  # daylight time and 9:47 ET in standard time; 19:47 UTC is 15:47 / 14:47 ET. Both fall inside
+  # the 9:30-16:00 session all year. Exchange holidays are not skipped. Scheduled runs only
+  # do the live analysis and put scan; tests and the build run on pushes.
+  schedule:
+    - cron: "47 14 * * 1-5"
+    - cron: "47 19 * * 1-5"
+
+jobs:
+  backend-tests:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Backend tests
+        working-directory: backend
+        run: python -m pytest -q
+
+  frontend-build:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        run: npm run build
+
+  live-analysis:
+    runs-on: ubuntu-latest
+    env:
+      MARKET_DATA_PROVIDER: yfinance
+      TICKERS: ${{ github.event.inputs.tickers || 'GOOGL MSFT AMZN INTC' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Analyze live market data
+        working-directory: backend
+        run: python -m app.analyze $TICKERS --markdown analysis.md --json analysis.json
+      - name: Publish report to the run summary
+        if: always()
+        working-directory: backend
+        run: test -f analysis.md && cat analysis.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: financial-analysis
+          path: |
+            backend/analysis.md
+            backend/analysis.json
+          if-no-files-found: ignore
+
+  put-signals:
+    runs-on: ubuntu-latest
+    env:
+      MARKET_DATA_PROVIDER: yfinance
+      TICKERS: ${{ github.event.inputs.tickers || 'GOOGL MSFT AMZN INTC' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Options tests
+        run: python -m pytest tests/options -q
+      - name: Scan puts to sell on live Yahoo data
+        run: |
+          python -m options.cli scan --source yahoo --tickers $TICKERS --all-tickers --no-positions --fundamentals live
+          cat reports/options/latest.md
+      - name: Publish report to the run summary
+        if: always()
+        run: test -f reports/options/latest.md && cat reports/options/latest.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: put-signals
+          path: |
+            reports/options/latest.md
+            reports/options/latest.json
+          if-no-files-found: ignore

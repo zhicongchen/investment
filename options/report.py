@@ -10,6 +10,7 @@ from typing import Any, Optional
 from options.scanner import ScanResult
 
 SCORE_LABELS = {
+    "put_score": "Put score",
     "annualized_yield": "Ann. yield",
     "iv_rank": "IV rank",
     "iv_hv_ratio": "IV/HV",
@@ -32,6 +33,8 @@ def to_dict(result: ScanResult) -> dict[str, Any]:
             "rejections": {ticker: dict(counter) for ticker, counter in result.rejections.items()},
             "errors": result.errors,
             "warnings": result.warnings,
+            "underlyings": {ticker: asdict(view) for ticker, view in result.underlyings.items()},
+            "earnings": result.earnings,
         }
     )
 
@@ -76,8 +79,11 @@ def _previous_signature(path: Path) -> Optional[tuple[Any, ...]]:
 
 
 def to_markdown(result: ScanResult) -> str:
-    # Yield and IV rank already have their own columns; only add a score column for the other metrics.
-    score_label = None if result.ranking_metric in {"annualized_yield", "iv_rank"} else SCORE_LABELS.get(result.ranking_metric, "Score")
+    # Yield, IV rank and put score already have their own columns; only add a score column for the other metrics.
+    score_label = (
+        None if result.ranking_metric in {"annualized_yield", "iv_rank", "put_score"} else SCORE_LABELS.get(result.ranking_metric, "Score")
+    )
+    graded = any(item.grade for item in result.candidates)
     lines = [
         f"# Put-selling signals — {result.generated_at:%Y-%m-%d %H:%M} ET",
         "",
@@ -91,7 +97,20 @@ def to_markdown(result: ScanResult) -> str:
         lines += ["## Warnings", ""] + [f"- {item}" for item in result.warnings] + [""]
 
     lines += ["## Top puts to sell", ""]
-    if result.candidates:
+    if result.candidates and graded:
+        lines += _graded_table(result, score_label)
+        lines += ["", "### Why these puts", ""]
+        for index, item in enumerate(result.candidates[:12], 1):
+            lines.append(f"**{index}. {item.ticker} {item.strike:g}P {item.expiry:%Y-%m-%d}** — grade {item.grade}, score {_num(item.put_score, 0)}")
+            lines += [f"- ✔ {text}" for text in item.reasons] + [f"- ⚠ {text}" for text in item.cautions] + [""]
+        lines += [
+            "_Grade: A ≥ 75, B ≥ 62, C ≥ 50 on premium richness (IV vs realized), probability of profit, distance in "
+            "expected moves, quality and price of the underlying, time to expiry (30-45 days best), liquidity; earnings "
+            "before expiry or no fundamental check caps the grade at B. PoP is risk-neutral (from IV)._",
+        ]
+        if any(item.delta_estimated for item in result.candidates):
+            lines.append("`*` delta estimated with Black-Scholes (no greeks from the data source).")
+    elif result.candidates:
         lines += _table(
             ["#", "Ticker", "Expiry", "DTE", "Strike", "Spot", "OTM", "Bid/Ask", "Premium", "Delta", "IV", "IV rank", "Ann. yield", "Breakeven", "OI"]
             + ([score_label] if score_label else [])
@@ -185,12 +204,15 @@ def to_console(result: ScanResult) -> str:
     for warning in result.warnings:
         lines.append(f"  ! {warning}")
     if result.candidates:
-        lines.append(f"  {'TICKER':<6} {'EXPIRY':<10} {'DTE':>3} {'STRIKE':>8} {'SPOT':>8} {'OTM':>6} {'PREM':>6} {'DELTA':>6} {'IV':>6} {'IVR':>4} {'YIELD':>7}")
+        lines.append(
+            f"  {'GR':<5} {'TICKER':<6} {'EXPIRY':<10} {'DTE':>3} {'STRIKE':>8} {'SPOT':>8} {'OTM':>6} {'PREM':>6} "
+            f"{'DELTA':>6} {'IV':>6} {'IVR':>4} {'YIELD':>7} {'POP':>6}"
+        )
         for item in result.candidates:
             lines.append(
-                f"  {item.ticker:<6} {item.expiry.isoformat():<10} {item.dte:>3} {item.strike:>8g} {item.spot:>8.2f} "
+                f"  {item.grade or '-':<5} {item.ticker:<6} {item.expiry.isoformat():<10} {item.dte:>3} {item.strike:>8g} {item.spot:>8.2f} "
                 f"{_pct(item.otm_pct):>6} {item.premium:>6.2f} {_num(item.delta):>6} {_pct(item.iv):>6} "
-                f"{_num(item.iv_rank, 0):>4} {_pct(item.annualized_yield):>7}"
+                f"{_num(item.iv_rank, 0):>4} {_pct(item.annualized_yield):>7} {_pct(item.prob_profit):>6}"
             )
     for item in result.positions:
         lines.append(
@@ -200,6 +222,37 @@ def to_console(result: ScanResult) -> str:
     if result.errors:
         lines.append(f"  errors: {len(result.errors)} ticker(s), see report")
     return "\n".join(lines)
+
+
+def _graded_table(result: ScanResult, score_label: Optional[str]) -> list[str]:
+    return _table(
+        ["#", "Grade", "Score", "Contract", "DTE", "Spot", "OTM", "Premium", "Ann. yield", "Delta", "PoP", "Exp. moves", "IV/RV", "Earnings", "Verdict", "BE vs fair"]
+        + ([score_label] if score_label else [])
+        + ["Held"],
+        [
+            [
+                str(index),
+                f"**{item.grade}**",
+                _num(item.put_score, 0),
+                f"{item.ticker} {item.strike:g}P {item.expiry:%m/%d}",
+                str(item.dte),
+                f"{item.spot:.2f}",
+                _pct(item.otm_pct),
+                f"{item.premium:.2f}",
+                _pct(item.annualized_yield),
+                (f"{item.delta:.2f}" + ("*" if item.delta_estimated else "")) if item.delta is not None else "-",
+                _pct(item.prob_profit),
+                _num(item.strike_sd, 1),
+                _num(item.contract_iv_hv),
+                (f"{item.earnings_date:%m/%d}" + (" ⚠" if item.earnings_in_trade else "")) if item.earnings_date else "-",
+                item.verdict or "-",
+                _pct(item.breakeven_discount),
+            ]
+            + ([_score(item.score, result.ranking_metric)] if score_label else [])
+            + [_held(result, item.ticker)]
+            for index, item in enumerate(result.candidates, 1)
+        ],
+    )
 
 
 def _dip_table(result: ScanResult, rows: list[Any]) -> list[str]:
@@ -235,7 +288,7 @@ def _held(result: ScanResult, ticker: str) -> str:
 def _score(value: float, metric: str) -> str:
     if metric == "annualized_yield":
         return _pct(value)
-    return _num(value, 0 if metric in {"iv_rank", "blend"} else 2)
+    return _num(value, 0 if metric in {"iv_rank", "blend", "put_score"} else 2)
 
 
 def _pct(value: Optional[float]) -> str:

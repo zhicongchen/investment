@@ -23,3 +23,9 @@ OPTIONS_REPORT_DIR = Path(os.getenv("OPTIONS_REPORT_DIR", str(BASE_DIR / "report
 MARKET_DATA_PROVIDER = os.getenv("MARKET_DATA_PROVIDER", "moomoo").strip().lower()
 MOOMOO_OPEND_HOST = os.getenv("MOOMOO_OPEND_HOST", "127.0.0.1").strip()
 MOOMOO_OPEND_PORT = int(os.getenv("MOOMOO_OPEND_PORT", "11111"))
+
+# Valuation inputs for the financial analysis DCF. Update RISK_FREE_RATE to the current 10-year Treasury yield.
+RISK_FREE_RATE = float(os.getenv("RISK_FREE_RATE", "0.0425"))
+EQUITY_RISK_PREMIUM = float(os.getenv("EQUITY_RISK_PREMIUM", "0.05"))
+TERMINAL_GROWTH_RATE = float(os.getenv("TERMINAL_GROWTH_RATE", "0.025"))
+REQUIRED_MARGIN_OF_SAFETY = float(os.getenv("REQUIRED_MARGIN_OF_SAFETY", "0.20"))

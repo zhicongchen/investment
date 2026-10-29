@@ -13,6 +13,13 @@ type Market = {
   fundamentals: Record<string, FundamentalsData>;
   errors: Record<string, string>;
 };
+// Output of `python -m app.analyze --json`: the backend's financial analysis per ticker.
+type Analysis = {
+  ticker: string;
+  composite_score: number | null;
+  recommendation: { action: string; conviction: string };
+  valuation: { margin_of_safety: number | null };
+};
 // [date, open, high, low, close, volume, adjusted close]
 type PriceRow = [string, number | null, number | null, number | null, number | null, number | null, number | null];
 
@@ -21,6 +28,7 @@ const DATA_BASE = `${import.meta.env?.BASE_URL ?? '/'}data/`;
 const WATCHLIST_NOTE = 'The online watchlist is the list in pages/watchlist.yaml. Edit it on GitHub and the site rebuilds.';
 
 let marketCache: Promise<Market> | null = null;
+let analysisCache: Promise<Record<string, Analysis>> | null = null;
 const priceCache = new Map<string, Promise<Bar[]>>();
 
 class HttpError extends Error {}
@@ -51,6 +59,7 @@ async function route(method: string, parts: string[], body: Record<string, unkno
     case 'POST /refresh':
       return reload();
     case 'GET /companies':
+      if (third === 'financial-analysis') return financialAnalysis(second);
       return companyDetail(second);
     case 'PUT /companies':
       if (third === 'fundamentals') return saveFundamentals(second, body);
@@ -104,6 +113,16 @@ function market(fresh = false): Promise<Market> {
   return marketCache;
 }
 
+/** Financial analyses by ticker; empty when the analysis step of the daily job failed. */
+function analyses(fresh = false): Promise<Record<string, Analysis>> {
+  if (!analysisCache || fresh) {
+    analysisCache = fetchJson<Analysis[]>('analysis.json', fresh)
+      .then((items) => Object.fromEntries(items.map((item) => [item.ticker, item])))
+      .catch(() => ({}));
+  }
+  return analysisCache;
+}
+
 function bars(ticker: string): Promise<Bar[]> {
   if (!priceCache.has(ticker)) {
     const request = fetchJson<PriceRow[]>(`prices/${encodeURIComponent(ticker)}.json`)
@@ -123,6 +142,7 @@ async function priceMap(tickers: string[]): Promise<Record<string, Bar[]>> {
 
 async function reload() {
   priceCache.clear();
+  analyses(true);
   const data = await market(true);
   return { refreshed: data.tickers.map((item) => item.ticker), failed: data.errors };
 }
@@ -175,12 +195,13 @@ function today(): string {
 
 async function listWatchlist() {
   const data = await market();
-  const [benchmark, total] = await Promise.all([bars(BENCHMARK_TICKER), portfolioValue()]);
+  const [benchmark, total, analysisByTicker] = await Promise.all([bars(BENCHMARK_TICKER), portfolioValue(), analyses()]);
   const staleBefore = new Date(Date.parse(`${today()}T00:00:00Z`) - STALE_DAYS * 86_400_000).toISOString().slice(0, 10);
   return Promise.all(
     data.tickers.map(async (company) => {
       const rows = await bars(company.ticker);
       const latest = rows.length ? rows[rows.length - 1] : null;
+      const analysis = analysisByTicker[company.ticker];
       return {
         ...company,
         latest_price: latest ? latest.adjusted_close ?? latest.close : null,
@@ -188,9 +209,24 @@ async function listWatchlist() {
         signal: rows.length ? await signalFor(company.ticker, rows, total) : null,
         stale: latest === null || latest.date < staleBefore,
         metrics: summaryMetrics(rows, benchmark),
+        verdict: analysis
+          ? {
+              action: analysis.recommendation.action,
+              conviction: analysis.recommendation.conviction,
+              composite_score: analysis.composite_score,
+              margin_of_safety: analysis.valuation.margin_of_safety,
+            }
+          : null,
       };
     }),
   );
+}
+
+async function financialAnalysis(raw: string | undefined) {
+  const ticker = symbol(raw);
+  const analysis = (await analyses())[ticker];
+  if (!analysis) throw new HttpError(`No financial analysis was published for ${ticker}.`);
+  return analysis;
 }
 
 async function companyDetail(raw: string | undefined) {

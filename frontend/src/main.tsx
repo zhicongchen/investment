@@ -27,6 +27,13 @@ type Signal = {
   risk_flags: string[];
 };
 
+type VerdictSummary = {
+  action: string;
+  conviction: string;
+  composite_score: number | null;
+  margin_of_safety: number | null;
+};
+
 type WatchlistRow = {
   ticker: string;
   name: string;
@@ -37,6 +44,7 @@ type WatchlistRow = {
   signal: Signal | null;
   stale: boolean;
   metrics: PriceMetrics | null;
+  verdict: VerdictSummary | null;
 };
 
 type PriceMetrics = {
@@ -107,6 +115,109 @@ type CompanyDetail = {
   holding: Holding | null;
 };
 
+type AnalysisMetric = {
+  key: string;
+  label: string;
+  value: number | null;
+  format: 'pct' | 'pp' | 'x' | 'score';
+  score: number | null;
+  weight: number;
+  note: string;
+};
+
+type AnalysisPillar = {
+  key: string;
+  label: string;
+  weight: number;
+  score: number | null;
+  metrics: AnalysisMetric[];
+};
+
+type AnnualFinancials = {
+  fiscal_date: string;
+  revenue: number | null;
+  revenue_growth: number | null;
+  gross_margin: number | null;
+  operating_margin: number | null;
+  net_margin: number | null;
+  free_cash_flow: number | null;
+  fcf_margin: number | null;
+  roe: number | null;
+  roic: number | null;
+  debt_to_equity: number | null;
+  current_ratio: number | null;
+  diluted_eps: number | null;
+  diluted_shares: number | null;
+};
+
+type ValuationSummary = {
+  method: string;
+  applicable: boolean;
+  note: string;
+  price: number | null;
+  bear_value: number | null;
+  base_value: number | null;
+  bull_value: number | null;
+  margin_of_safety: number | null;
+  upside: number | null;
+  entry_price: number | null;
+  trim_price: number | null;
+  discount_rate: number | null;
+  cost_of_equity: number | null;
+  beta: number | null;
+  stage_one_growth: number | null;
+  growth_source: string;
+  terminal_growth: number | null;
+  terminal_value_share: number | null;
+  implied_growth: number | null;
+  base_cash_flow: number | null;
+  cash_flow_basis: string;
+  required_margin_of_safety: number;
+};
+
+type FinancialAnalysis = {
+  ticker: string;
+  sector: string;
+  as_of: string | null;
+  statement_date: string | null;
+  statement_basis: string;
+  is_financial_sector: boolean;
+  data_coverage: number;
+  price: number | null;
+  market_cap: number | null;
+  enterprise_value: number | null;
+  pillars: AnalysisPillar[];
+  composite_score: number | null;
+  annual: AnnualFinancials[];
+  piotroski: { score: number; max: number; normalized: number; fiscal_date: string; checks: { name: string; passed: boolean }[] } | null;
+  altman_z: number | null;
+  economic_spread: number | null;
+  valuation: ValuationSummary;
+  flags: { severity: 'high' | 'medium' | 'low'; message: string }[];
+  position: {
+    shares: number;
+    average_cost: number;
+    market_value: number | null;
+    unrealized_return: number | null;
+    allocation: number | null;
+    target_allocation: number | null;
+    overweight: boolean;
+    underweight: boolean;
+  } | null;
+  recommendation: {
+    action: string;
+    conviction: string;
+    composite_score: number | null;
+    summary: string;
+    rationale: string[];
+    strengths: string[];
+    concerns: string[];
+    triggers: string[];
+    timing_note: string | null;
+  };
+  warnings: string[];
+};
+
 type MarketComparison = {
   benchmark: string;
   tickers: string[];
@@ -172,6 +283,19 @@ type PutCandidate = {
   collateral: number;
   contracts: number | null;
   score: number;
+  prob_profit: number | null;
+  strike_sd: number | null;
+  contract_iv_hv: number | null;
+  edge_pct: number | null;
+  earnings_date: string | null;
+  earnings_in_trade: boolean;
+  verdict: string | null;
+  fair_value: number | null;
+  breakeven_discount: number | null;
+  put_score: number | null;
+  grade: string | null;
+  reasons: string[];
+  cautions: string[];
 };
 
 type DipRow = {
@@ -210,6 +334,30 @@ type OptionsScan = {
   exposure: Record<string, { contracts: number; collateral: number }>;
   errors: Record<string, string>;
   warnings: string[];
+  rejections?: Record<string, Record<string, number>>;
+  underlyings?: Record<string, { action: string; conviction: string; composite_score: number | null; fair_value: number | null; buy_below: number | null }>;
+  earnings?: Record<string, string | null>;
+  source?: string;
+};
+
+type OptionsDefaults = {
+  tickers: string[];
+  ranking_metric: string;
+  min_dte: number;
+  max_dte: number;
+  delta_min: number;
+  delta_max: number;
+  earnings: string;
+  positions_enabled: boolean;
+  moomoo_available: boolean;
+};
+
+type ScanForm = {
+  tickers: string;
+  source: 'auto' | 'moomoo' | 'yahoo';
+  onlyDipping: boolean;
+  includePositions: boolean;
+  useFundamentals: boolean;
 };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -243,12 +391,43 @@ function signalClass(action?: string): string {
   return `signal ${action ? action.toLowerCase().replace('_', '-') : 'none'}`;
 }
 
+function actionLabel(action: string): string {
+  return action.replace('_', ' ');
+}
+
+function compactMoney(value: number | null | undefined): string {
+  if (value === null || value === undefined) return 'n/a';
+  const abs = Math.abs(value);
+  const sign = value < 0 ? '-' : '';
+  if (abs >= 1e12) return `${sign}$${(abs / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  return money(value);
+}
+
+function metricText(metric: AnalysisMetric): string {
+  const value = metric.value;
+  if (value === null) return 'n/a';
+  if (metric.format === 'pct') return pct(value);
+  if (metric.format === 'pp') return `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)} pp`;
+  if (metric.format === 'x') return `${value.toFixed(1)}x`;
+  return value.toFixed(2);
+}
+
+function scoreClass(score: number | null | undefined): string {
+  if (score === null || score === undefined) return 'score-na';
+  if (score >= 70) return 'score-good';
+  if (score >= 45) return 'score-mid';
+  return 'score-weak';
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>('dashboard');
   const [watchlist, setWatchlist] = useState<WatchlistRow[]>([]);
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string>('');
   const [detail, setDetail] = useState<CompanyDetail | null>(null);
+  const [analysis, setAnalysis] = useState<FinancialAnalysis | null>(null);
   const [comparison, setComparison] = useState<MarketComparison | null>(null);
   const [portfolioAnalytics, setPortfolioAnalytics] = useState<PortfolioAnalytics | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
@@ -290,6 +469,14 @@ function App() {
     setTickerAnalyses(await request<OllamaAnalysis[]>(`/ollama/analyze/ticker/${ticker}`));
   }
 
+  async function loadFinancialAnalysis(ticker: string) {
+    try {
+      setAnalysis(await request<FinancialAnalysis>(`/companies/${ticker}/financial-analysis`));
+    } catch {
+      setAnalysis(null);
+    }
+  }
+
   async function loadPortfolioAnalyses() {
     setPortfolioAnalyses(await request<OllamaAnalysis[]>('/ollama/analyze/portfolio'));
   }
@@ -301,9 +488,12 @@ function App() {
   useEffect(() => {
     if (!selectedTicker) {
       setDetail(null);
+      setAnalysis(null);
       return;
     }
+    setAnalysis(null);
     request<CompanyDetail>(`/companies/${selectedTicker}`).then(setDetail).catch((err) => setError(err.message));
+    loadFinancialAnalysis(selectedTicker);
     loadTickerAnalyses(selectedTicker).catch(() => setTickerAnalyses([]));
   }, [selectedTicker]);
 
@@ -354,6 +544,8 @@ function App() {
       if (ticker) {
         setDetail(await request<CompanyDetail>(`/companies/${ticker}`));
       }
+      const analyzed = ticker ?? selectedTicker;
+      if (analyzed) await loadFinancialAnalysis(analyzed);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Refresh failed');
     } finally {
@@ -392,6 +584,7 @@ function App() {
       });
       setHoldingForm({ ticker: '', shares: '', average_cost: '', target_allocation: '', notes: '' });
       await load();
+      if (selectedTicker) await loadFinancialAnalysis(selectedTicker);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save holding');
     } finally {
@@ -423,6 +616,7 @@ function App() {
       });
       await load();
       setDetail(await request<CompanyDetail>(`/companies/${ticker}`));
+      await loadFinancialAnalysis(ticker);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save fundamentals');
     } finally {
@@ -520,6 +714,7 @@ function App() {
                     <th>Ticker</th>
                     <th>Company</th>
                     <th>Price</th>
+                    <th>Verdict</th>
                     <th>Signal</th>
                     <th>Score</th>
                     <th>YTD</th>
@@ -537,6 +732,12 @@ function App() {
                         <span>{row.sector || row.exchange || 'US stock'}</span>
                       </td>
                       <td>{money(row.latest_price)}</td>
+                      <td>
+                        <span className={signalClass(row.verdict?.action)}>{row.verdict ? actionLabel(row.verdict.action) : 'PENDING'}</span>
+                        {row.verdict?.margin_of_safety !== null && row.verdict?.margin_of_safety !== undefined && (
+                          <span>{row.verdict.margin_of_safety >= 0 ? `${pct(row.verdict.margin_of_safety)} below fair value` : `${pct(-row.verdict.margin_of_safety)} above fair value`}</span>
+                        )}
+                      </td>
                       <td><span className={signalClass(row.signal?.action)}>{row.signal?.action || 'PENDING'}</span></td>
                       <td>{row.signal ? row.signal.score.toFixed(1) : 'n/a'}</td>
                       <td className={row.metrics?.ytd_return && row.metrics.ytd_return >= 0 ? 'positive' : 'negative'}>{pct(row.metrics?.ytd_return)}</td>
@@ -557,6 +758,7 @@ function App() {
 
             <CompanyPanel
               detail={detail}
+              analysis={analysis}
               refresh={refresh}
               saveFundamentals={saveFundamentals}
               busy={busy}
@@ -659,6 +861,7 @@ type FundamentalsForm = Record<keyof Omit<Fundamentals, 'date'>, string>;
 
 function CompanyPanel({
   detail,
+  analysis,
   refresh,
   saveFundamentals,
   busy,
@@ -667,6 +870,7 @@ function CompanyPanel({
   generateAnalysis,
 }: {
   detail: CompanyDetail | null;
+  analysis: FinancialAnalysis | null;
   refresh: (ticker?: string) => Promise<void>;
   saveFundamentals: (ticker: string, payload: Omit<Fundamentals, 'date'>) => Promise<void>;
   busy: boolean;
@@ -713,11 +917,13 @@ function CompanyPanel({
         </div>
       </div>
 
+      {analysis && analysis.ticker === detail.company.ticker && <VerdictPanel analysis={analysis} />}
+
       {latestSignal && (
         <div className="signal-box">
           <span className={signalClass(latestSignal.action)}>{latestSignal.action}</span>
           <strong>{latestSignal.score.toFixed(1)}</strong>
-          <small>{latestSignal.confidence} confidence · {latestSignal.date}</small>
+          <small>Quick screen · {latestSignal.confidence} confidence · {latestSignal.date}</small>
         </div>
       )}
 
@@ -770,15 +976,17 @@ function CompanyPanel({
         </div>
       </div>
 
+      {analysis && analysis.ticker === detail.company.ticker && <FinancialDetails analysis={analysis} />}
+
       <FundamentalsEditor detail={detail} saveFundamentals={saveFundamentals} busy={busy} />
 
       <div className="explain">
         <div>
-          <h4>Reasons</h4>
+          <h4>Quick Screen Reasons</h4>
           <ul>{(latestSignal?.reasons.length ? latestSignal.reasons : ['Signal pending data refresh']).map((item) => <li key={item}>{item}</li>)}</ul>
         </div>
         <div>
-          <h4>Risk Flags</h4>
+          <h4>Quick Screen Risks</h4>
           <ul>{(latestSignal?.risk_flags.length ? latestSignal.risk_flags : ['No risk flags recorded']).map((item) => <li key={item}>{item}</li>)}</ul>
         </div>
       </div>
@@ -793,6 +1001,214 @@ function CompanyPanel({
         />
       )}
     </section>
+  );
+}
+
+function VerdictPanel({ analysis }: { analysis: FinancialAnalysis }) {
+  const recommendation = analysis.recommendation;
+  return (
+    <div className="verdict-panel">
+      <div className="verdict-head">
+        <span className={signalClass(recommendation.action)}>{actionLabel(recommendation.action)}</span>
+        <strong>{num(recommendation.composite_score, 0)}<small>/100</small></strong>
+        <small>
+          {recommendation.conviction} conviction · {analysis.statement_date ? `${analysis.statement_basis} ${analysis.statement_date}` : 'no statements'}
+        </small>
+      </div>
+      <p className="verdict-summary">{recommendation.summary}</p>
+      {recommendation.rationale.length > 0 && (
+        <ul className="verdict-rationale">{recommendation.rationale.map((item) => <li key={item}>{item}</li>)}</ul>
+      )}
+      {recommendation.timing_note && <p className="timing-note">{recommendation.timing_note}</p>}
+      {analysis.warnings.map((warning) => <div className="notice compact-notice" key={warning}>{warning}</div>)}
+      <ValueRange valuation={analysis.valuation} />
+      <div className="pillar-list">
+        {analysis.pillars.map((pillar) => (
+          <div className="pillar" key={pillar.key}>
+            <span>{pillar.label}</span>
+            <div className="pillar-track">
+              <div className={`pillar-fill ${scoreClass(pillar.score)}`} style={{ width: `${pillar.score ?? 0}%` }} />
+            </div>
+            <strong>{pillar.score === null ? 'n/a' : pillar.score.toFixed(0)}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ValueRange({ valuation }: { valuation: ValuationSummary }) {
+  const { price, bear_value: bear, base_value: base, bull_value: bull, entry_price: entry, trim_price: trim } = valuation;
+  if (!valuation.applicable || price === null || bear === null || base === null || bull === null) {
+    return <p className="empty">{valuation.note || 'Fair value estimate unavailable.'}</p>;
+  }
+  const points = [price, bear, bull, entry ?? base, trim ?? bull];
+  const low = Math.min(...points) * 0.9;
+  const high = Math.max(...points) * 1.08;
+  const position = (value: number) => `${((value - low) / (high - low)) * 100}%`;
+  const upside = valuation.upside;
+  return (
+    <div className="value-range">
+      <div className="value-range-head">
+        <span>Fair value <strong>{money(base)}</strong></span>
+        {upside !== null && (
+          <strong className={upside >= 0 ? 'positive' : 'negative'}>{upside >= 0 ? '+' : ''}{pct(upside)} to base case</strong>
+        )}
+      </div>
+      <div className="range-track">
+        {entry !== null && <div className="zone buy-zone" style={{ left: 0, width: position(entry) }} />}
+        {trim !== null && <div className="zone rich-zone" style={{ left: position(trim), right: 0 }} />}
+        <div className="fair-band" style={{ left: position(bear), width: `calc(${position(bull)} - ${position(bear)})` }} />
+        <div className="base-tick" style={{ left: position(base) }} />
+        <div className="price-marker" style={{ left: position(price) }}><span>{money(price)}</span></div>
+      </div>
+      <div className="range-legend">
+        <span>Bear {money(bear)}</span>
+        <span>Base {money(base)}</span>
+        <span>Bull {money(bull)}</span>
+        {entry !== null && <span className="positive">Buy below {money(entry)}</span>}
+        {trim !== null && <span className="negative">Rich above {money(trim)}</span>}
+      </div>
+    </div>
+  );
+}
+
+type AnnualLine = { key: Exclude<keyof AnnualFinancials, 'fiscal_date'>; label: string; format: 'money' | 'pct' | 'x' | 'eps' | 'shares' };
+
+const ANNUAL_LINES: AnnualLine[] = [
+  { key: 'revenue', label: 'Revenue', format: 'money' },
+  { key: 'revenue_growth', label: 'Revenue growth', format: 'pct' },
+  { key: 'gross_margin', label: 'Gross margin', format: 'pct' },
+  { key: 'operating_margin', label: 'Operating margin', format: 'pct' },
+  { key: 'net_margin', label: 'Net margin', format: 'pct' },
+  { key: 'free_cash_flow', label: 'Free cash flow', format: 'money' },
+  { key: 'fcf_margin', label: 'FCF margin', format: 'pct' },
+  { key: 'roic', label: 'ROIC', format: 'pct' },
+  { key: 'roe', label: 'ROE', format: 'pct' },
+  { key: 'debt_to_equity', label: 'Debt / equity', format: 'x' },
+  { key: 'current_ratio', label: 'Current ratio', format: 'x' },
+  { key: 'diluted_eps', label: 'Diluted EPS', format: 'eps' },
+  { key: 'diluted_shares', label: 'Diluted shares', format: 'shares' },
+];
+
+function annualCell(value: number | null, format: AnnualLine['format']): string {
+  if (value === null) return 'n/a';
+  if (format === 'money') return compactMoney(value);
+  if (format === 'pct') return pct(value);
+  if (format === 'x') return `${value.toFixed(2)}x`;
+  if (format === 'eps') return money(value);
+  return `${(value / 1e6).toFixed(0)}M`;
+}
+
+function FinancialDetails({ analysis }: { analysis: FinancialAnalysis }) {
+  const recommendation = analysis.recommendation;
+  const valuation = analysis.valuation;
+  const position = analysis.position;
+  return (
+    <div className="financial-details">
+      <div className="explain triple">
+        <div>
+          <h4>Strengths</h4>
+          <ul>{(recommendation.strengths.length ? recommendation.strengths : ['Nothing stands out yet']).map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+        <div>
+          <h4>Concerns</h4>
+          <ul>{(recommendation.concerns.length ? recommendation.concerns : ['No major concerns']).map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+        <div>
+          <h4>What Would Change the View</h4>
+          <ul>{(recommendation.triggers.length ? recommendation.triggers : ['Refresh after the next earnings report']).map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+      </div>
+
+      {analysis.flags.length > 0 && (
+        <div className="flag-list">
+          <h4>Red Flags</h4>
+          {analysis.flags.map((flag) => (
+            <div key={flag.message} className={`flag ${flag.severity}`}><span>{flag.severity}</span>{flag.message}</div>
+          ))}
+        </div>
+      )}
+
+      {position && (
+        <div className="metric-row compact">
+          <div><span>Unrealized</span><strong className={(position.unrealized_return ?? 0) >= 0 ? 'positive' : 'negative'}>{pct(position.unrealized_return)}</strong></div>
+          <div><span>Market Value</span><strong>{money(position.market_value)}</strong></div>
+          <div><span>Allocation</span><strong>{pct(position.allocation)}</strong></div>
+          <div><span>Target</span><strong>{pct(position.target_allocation)}</strong></div>
+        </div>
+      )}
+
+      <details className="analysis-section" open>
+        <summary>Valuation model</summary>
+        <table className="mini-table">
+          <tbody>
+            <tr><td>Method</td><td>{valuation.method || 'n/a'}{valuation.note && <span>{valuation.note}</span>}</td></tr>
+            <tr><td>Market cap / EV</td><td>{compactMoney(analysis.market_cap)} / {compactMoney(analysis.enterprise_value)}</td></tr>
+            <tr><td>Discount rate (WACC)</td><td>{pct(valuation.discount_rate)}<span>cost of equity {pct(valuation.cost_of_equity)} · beta {num(valuation.beta)}</span></td></tr>
+            <tr><td>Base free cash flow</td><td>{compactMoney(valuation.base_cash_flow)}<span>{valuation.cash_flow_basis}</span></td></tr>
+            <tr><td>Growth, years 1-5</td><td>{pct(valuation.stage_one_growth)}<span>{valuation.growth_source}</span></td></tr>
+            <tr><td>Terminal growth</td><td>{pct(valuation.terminal_growth)}<span>{pct(valuation.terminal_value_share)} of value from terminal year</span></td></tr>
+            <tr><td>Growth priced in</td><td>{pct(valuation.implied_growth)}<span>reverse DCF at today's price</span></td></tr>
+            <tr><td>Margin of safety</td><td>{pct(valuation.margin_of_safety)}<span>required {pct(valuation.required_margin_of_safety)}</span></td></tr>
+            <tr><td>ROIC minus WACC</td><td className={(analysis.economic_spread ?? 0) >= 0 ? 'positive' : 'negative'}>{pct(analysis.economic_spread)}</td></tr>
+            <tr><td>Altman Z / Piotroski F</td><td>{num(analysis.altman_z)} / {analysis.piotroski ? `${analysis.piotroski.score} of ${analysis.piotroski.max}` : 'n/a'}</td></tr>
+          </tbody>
+        </table>
+      </details>
+
+      <details className="analysis-section">
+        <summary>Scorecard detail</summary>
+        {analysis.pillars.map((pillar) => (
+          <div key={pillar.key} className="scorecard">
+            <h5>{pillar.label} <span className={`score-chip ${scoreClass(pillar.score)}`}>{pillar.score === null ? 'n/a' : pillar.score.toFixed(0)}</span></h5>
+            <table className="mini-table">
+              <tbody>
+                {pillar.metrics.filter((metric) => metric.value !== null || metric.score !== null).map((metric) => (
+                  <tr key={metric.key}>
+                    <td>{metric.label}{metric.note && <span>{metric.note}</span>}</td>
+                    <td>{metricText(metric)}</td>
+                    <td><span className={`score-chip ${scoreClass(metric.score)}`}>{metric.score === null ? 'info' : metric.score.toFixed(0)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </details>
+
+      {analysis.annual.length > 0 && (
+        <details className="analysis-section">
+          <summary>Annual trend</summary>
+          <div className="table-scroll">
+            <table className="mini-table trend-table">
+              <thead>
+                <tr><th></th>{analysis.annual.map((row) => <th key={row.fiscal_date}>FY{row.fiscal_date.slice(0, 4)}</th>)}</tr>
+              </thead>
+              <tbody>
+                {ANNUAL_LINES.map((line) => (
+                  <tr key={line.key}>
+                    <td>{line.label}</td>
+                    {analysis.annual.map((row) => <td key={row.fiscal_date}>{annualCell(row[line.key], line.format)}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+
+      {analysis.piotroski && (
+        <details className="analysis-section">
+          <summary>Piotroski F-score {analysis.piotroski.score} of {analysis.piotroski.max} (FY{analysis.piotroski.fiscal_date.slice(0, 4)})</summary>
+          <ul className="checklist">
+            {analysis.piotroski.checks.map((check) => (
+              <li key={check.name} className={check.passed ? 'positive' : 'negative'}>{check.passed ? '✓' : '✗'} {check.name}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -1008,6 +1424,8 @@ function AnalysisPanel({
   );
 }
 
+const GRADE_CLASS: Record<string, string> = { A: 'buy', B: 'hold', C: 'watch', PASS: 'none', AVOID: 'avoid' };
+
 const ADVICE_CLASS: Record<string, string> = {
   'TAKE PROFIT': 'signal buy',
   HOLD: 'signal hold',
@@ -1017,57 +1435,149 @@ const ADVICE_CLASS: Record<string, string> = {
 
 function PutSignalsPanel() {
   const [scan, setScan] = useState<OptionsScan | null>(null);
+  const [defaults, setDefaults] = useState<OptionsDefaults | null>(null);
+  const [form, setForm] = useState<ScanForm>({ tickers: '', source: 'auto', onlyDipping: false, includePositions: false, useFundamentals: true });
+  const [scanning, setScanning] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   async function load() {
     try {
       setScan(await request<OptionsScan>('/options/latest'));
-      setError('');
+      setNotice('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      if (ONLINE) setNotice(message);
+      else setNotice(message.includes('No put-selling scan') ? 'No scan yet: choose tickers and press Run scan.' : '');
     }
   }
 
   useEffect(() => {
     load();
-    // Online, the scan only changes once a day when the site is rebuilt.
+    // Online, the scan is published once a day when the site is rebuilt; there is no backend to run one.
     if (ONLINE) return undefined;
+    request<OptionsDefaults>('/options/defaults')
+      .then((value) => {
+        setDefaults(value);
+        setForm((current) => ({ ...current, tickers: current.tickers || value.tickers.join(' '), includePositions: value.positions_enabled && value.moomoo_available }));
+      })
+      .catch(() => setDefaults(null));
     const timer = window.setInterval(load, 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
+  async function runScan(event: React.FormEvent) {
+    event.preventDefault();
+    const tickers = form.tickers.split(/[\s,]+/).map((ticker) => ticker.trim().toUpperCase()).filter(Boolean);
+    if (tickers.length === 0) {
+      setError('Enter at least one ticker.');
+      return;
+    }
+    setScanning(true);
+    setError('');
+    try {
+      setScan(
+        await request<OptionsScan>('/options/scan', {
+          method: 'POST',
+          body: JSON.stringify({
+            tickers,
+            source: form.source,
+            only_dipping: form.onlyDipping,
+            include_positions: form.includePositions,
+            fundamentals: form.useFundamentals ? 'dashboard' : 'off',
+          }),
+        }),
+      );
+      setNotice('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Scan failed');
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  const scanForm = ONLINE ? (
+    <section className="panel wide-row">
+      <p className="history-note">
+        Scanned after each US close on delayed Yahoo data for the tickers in <code>pages/watchlist.yaml</code>. Thresholds live in options/config.yaml.
+      </p>
+    </section>
+  ) : (
+    <section className="panel wide-row">
+      <form className="scan-form" onSubmit={runScan}>
+        <label className="scan-tickers">
+          Tickers
+          <input value={form.tickers} onChange={(e) => setForm({ ...form, tickers: e.target.value })} placeholder="GOOGL MSFT AMZN INTC" />
+        </label>
+        <label>
+          Data
+          <select value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value as ScanForm['source'] })}>
+            <option value="auto">Auto {defaults ? (defaults.moomoo_available ? '(Moomoo)' : '(Yahoo)') : ''}</option>
+            <option value="moomoo">Moomoo OpenD</option>
+            <option value="yahoo">Yahoo (delayed)</option>
+          </select>
+        </label>
+        <label className="check"><input type="checkbox" checked={form.onlyDipping} onChange={(e) => setForm({ ...form, onlyDipping: e.target.checked })} /> Only stocks going down</label>
+        <label className="check"><input type="checkbox" checked={form.useFundamentals} onChange={(e) => setForm({ ...form, useFundamentals: e.target.checked })} /> Check fundamentals</label>
+        <label className="check"><input type="checkbox" checked={form.includePositions} onChange={(e) => setForm({ ...form, includePositions: e.target.checked })} /> My IBKR short puts</label>
+        <button className="primary" disabled={scanning}>
+          <RefreshCw size={16} className={scanning ? 'spin' : ''} /> {scanning ? 'Scanning…' : 'Run scan'}
+        </button>
+      </form>
+      <p className="history-note">
+        {scanning
+          ? 'Fetching prices, option chains, earnings dates and fundamentals. Yahoo takes seconds per ticker; Moomoo is rate-limited and can take a few minutes.'
+          : defaults
+            ? `Puts ${defaults.min_dte}-${defaults.max_dte} days out, delta ${defaults.delta_min} to ${defaults.delta_max}, earnings before expiry: ${defaults.earnings}. Thresholds live in options/config.yaml.`
+            : 'Graded on premium richness, odds, earnings risk, the quality and price of the stock, time to expiry and liquidity.'}
+      </p>
+      {error && <div className="alert compact-alert">{error}</div>}
+    </section>
+  );
+
   if (!scan) {
-    return <section className="panel">{error ? <div className="alert">{error}</div> : <p className="empty">Loading latest scan…</p>}</section>;
+    return (
+      <div className="grid">
+        {scanForm}
+        <section className="panel wide-row">{notice ? <p className="empty">{notice}</p> : <p className="empty">Loading latest scan…</p>}</section>
+      </div>
+    );
   }
 
   const dipping = scan.dips.filter((row) => row.is_dip);
   const errors = Object.entries(scan.errors);
+  const rejected = Object.entries(scan.rejections ?? {}).filter(([ticker]) => !scan.candidates.some((put) => put.ticker === ticker));
   return (
     <div className="grid">
-      {error && <div className="alert">{error}</div>}
-      {scan.warnings.map((warning) => <div className="notice" key={warning}>{warning}</div>)}
-      <section className="panel wide">
+      {scanForm}
+      {scan.warnings.map((warning) => <div className="notice wide-row" key={warning}>{warning}</div>)}
+      <section className="panel wide-row">
         <div className="section-head">
           <h4>Top puts to sell</h4>
           <span>
-            {new Date(scan.generated_at).toLocaleString()} · {scan.universe.length} scanned · {dipping.length} going down · ranked by {scan.ranking_metric}
+            {new Date(scan.generated_at).toLocaleString()} · {scan.source ? `${scan.source} · ` : ''}{scan.universe.length} scanned · {dipping.length} going down · ranked by {scan.ranking_metric}
             {' '}
             <button className="ghost" onClick={load} title="Reload latest scan"><RefreshCw size={14} /></button>
           </span>
         </div>
         {scan.candidates.length === 0 ? (
-          <p className="empty">No puts passed the filters in the latest scan.</p>
+          <p className="empty">No puts passed the filters in this scan. See why below.</p>
         ) : (
           <table>
             <thead>
               <tr>
-                <th>Contract</th><th>DTE</th><th>Spot</th><th>OTM</th><th>Bid / Ask</th><th>Premium</th>
-                <th>Delta</th><th>IV</th><th>IV rank</th><th>Ann. yield</th><th>Breakeven</th><th>OI</th><th>Held</th>
+                <th>Grade</th><th>Contract</th><th>DTE</th><th>Spot</th><th>OTM</th><th>Bid / Ask</th><th>Premium</th>
+                <th>Delta</th><th>PoP</th><th>IV / RV</th><th>IV rank</th><th>Ann. yield</th><th>Breakeven</th><th>Earnings</th>
+                <th>Verdict</th><th>OI</th><th>Held</th>
               </tr>
             </thead>
             <tbody>
               {scan.candidates.map((put) => (
-                <tr key={put.code}>
+                <tr key={put.code} title={[...put.reasons.map((text) => `+ ${text}`), ...put.cautions.map((text) => `! ${text}`)].join('\n')}>
+                  <td>
+                    <span className={`signal ${GRADE_CLASS[put.grade ?? ''] ?? 'none'}`}>{put.grade ?? '-'}</span>
+                    <span>{num(put.put_score, 0)}</span>
+                  </td>
                   <td><span className="ticker">{put.ticker} {put.strike}P</span><span>{put.expiry}</span></td>
                   <td>{put.dte}</td>
                   <td>{num(put.spot)}</td>
@@ -1075,16 +1585,48 @@ function PutSignalsPanel() {
                   <td>{num(put.bid)} / {num(put.ask)}</td>
                   <td>{num(put.premium)}<span>{money(put.premium * 100)} / ct</span></td>
                   <td>{num(put.delta)}{put.delta_estimated ? '*' : ''}</td>
-                  <td>{pct(put.iv)}</td>
+                  <td>{pct(put.prob_profit)}<span>{num(put.strike_sd, 1)} exp. moves</span></td>
+                  <td>{pct(put.iv)}<span>{put.contract_iv_hv !== null ? `${num(put.contract_iv_hv)}x realized` : ''}</span></td>
                   <td>{num(put.iv_rank, 0)}</td>
                   <td><strong>{pct(put.annualized_yield)}</strong></td>
                   <td>{num(put.breakeven)}<span>{pct(put.cushion_pct)} cushion</span></td>
+                  <td className={put.earnings_in_trade ? 'negative' : ''}>{put.earnings_date ?? '-'}<span>{put.earnings_in_trade ? 'before expiry' : ''}</span></td>
+                  <td>{put.verdict ? <span className={signalClass(put.verdict)}>{actionLabel(put.verdict)}</span> : '-'}<span>{put.breakeven_discount !== null ? `BE ${pct(Math.abs(put.breakeven_discount))} ${put.breakeven_discount >= 0 ? 'below' : 'above'} fair value` : ''}</span></td>
                   <td>{put.open_interest ?? 'n/a'}</td>
                   <td>{scan.exposure[put.ticker] ? `${scan.exposure[put.ticker].contracts} ct` : '-'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+        )}
+        {scan.candidates.some((put) => put.grade) && (
+          <div className="put-reasons">
+            {scan.candidates.slice(0, 12).map((put, index) => (
+              <div className="put-reason" key={put.code}>
+                <div>
+                  <span className={`signal ${GRADE_CLASS[put.grade ?? ''] ?? 'none'}`}>{put.grade ?? '-'}</span>
+                  <strong>{index + 1}. {put.ticker} {put.strike}P {put.expiry}</strong>
+                  <small>score {num(put.put_score, 0)} · {pct(put.prob_profit)} PoP · {pct(put.annualized_yield)} ann.</small>
+                </div>
+                <ul>
+                  {put.reasons.map((text) => <li key={text} className="positive">✔ {text}</li>)}
+                  {put.cautions.map((text) => <li key={text} className="negative">⚠ {text}</li>)}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+        {rejected.length > 0 && (
+          <div className="rejections">
+            <h4>Why some tickers have no puts</h4>
+            <ul>
+              {rejected.map(([ticker, reasons]) => (
+                <li key={ticker}>
+                  <strong>{ticker}</strong>: {Object.entries(reasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${reason} (${count})`).join(', ') || 'no contracts returned'}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </section>
 

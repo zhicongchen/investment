@@ -10,7 +10,49 @@ from urllib.request import Request, urlopen
 
 import yfinance as yf
 
-from app.providers.base import CompanyProfile, FundamentalsData, MarketDataProvider, PriceBarData
+from app.providers.base import (
+    STATEMENT_FIELDS,
+    CompanyProfile,
+    FinancialStatementData,
+    FundamentalsData,
+    MarketDataProvider,
+    PriceBarData,
+)
+
+# Statement field -> yfinance row labels, first match wins.
+_STATEMENT_ROWS: dict[str, tuple[str, ...]] = {
+    "revenue": ("Total Revenue", "Operating Revenue"),
+    "cost_of_revenue": ("Cost Of Revenue", "Reconciled Cost Of Revenue"),
+    "gross_profit": ("Gross Profit",),
+    "operating_income": ("Operating Income", "EBIT"),
+    "ebitda": ("EBITDA", "Normalized EBITDA"),
+    "interest_expense": ("Interest Expense", "Interest Expense Non Operating"),
+    "pretax_income": ("Pretax Income",),
+    "income_tax": ("Tax Provision",),
+    "net_income": ("Net Income Common Stockholders", "Net Income"),
+    "diluted_eps": ("Diluted EPS",),
+    "operating_cash_flow": ("Operating Cash Flow", "Cash Flow From Continuing Operating Activities"),
+    "capital_expenditure": ("Capital Expenditure",),
+    "free_cash_flow": ("Free Cash Flow",),
+    "dividends_paid": ("Cash Dividends Paid", "Common Stock Dividend Paid"),
+    "share_repurchases": ("Repurchase Of Capital Stock", "Common Stock Payments"),
+    "stock_based_compensation": ("Stock Based Compensation",),
+    "depreciation": ("Depreciation And Amortization", "Reconciled Depreciation", "Depreciation Amortization Depletion"),
+    "diluted_shares": ("Diluted Average Shares",),
+    "shares_outstanding": ("Ordinary Shares Number", "Share Issued"),
+    "total_assets": ("Total Assets",),
+    "current_assets": ("Current Assets",),
+    "cash_and_investments": ("Cash Cash Equivalents And Short Term Investments", "Cash And Cash Equivalents"),
+    "receivables": ("Accounts Receivable", "Receivables"),
+    "inventory": ("Inventory",),
+    "total_liabilities": ("Total Liabilities Net Minority Interest",),
+    "current_liabilities": ("Current Liabilities",),
+    "total_debt": ("Total Debt",),
+    "long_term_debt": ("Long Term Debt", "Long Term Debt And Capital Lease Obligation"),
+    "shareholders_equity": ("Stockholders Equity", "Common Stock Equity"),
+    "retained_earnings": ("Retained Earnings",),
+}
+_OUTFLOW_FIELDS = {"interest_expense", "capital_expenditure", "dividends_paid", "share_repurchases"}
 
 
 def _number(value: Any) -> Optional[float]:
@@ -78,6 +120,55 @@ class YFinanceProvider(MarketDataProvider):
             free_cash_flow=_number(info.get("freeCashflow")),
             dividend_yield=_number(info.get("dividendYield")),
         )
+
+    def get_financial_statements(self, ticker: str) -> list[FinancialStatementData]:
+        symbol = ticker.upper().strip()
+        stock = yf.Ticker(symbol)
+        statements: list[FinancialStatementData] = []
+        for period, frames in (
+            ("annual", ("income_stmt", "balance_sheet", "cashflow")),
+            ("quarterly", ("quarterly_income_stmt", "quarterly_balance_sheet", "quarterly_cashflow")),
+        ):
+            rows: dict[date, dict[str, float]] = {}
+            for attribute in frames:
+                try:
+                    frame = getattr(stock, attribute)
+                except Exception:
+                    continue
+                for fiscal_date, values in _frame_columns(frame).items():
+                    rows.setdefault(fiscal_date, {}).update(values)
+            for fiscal_date in sorted(rows):
+                statement = _statement_from_rows(fiscal_date, period, rows[fiscal_date])
+                if statement is not None:
+                    statements.append(statement)
+        return statements
+
+
+def _frame_columns(frame: Any) -> dict[date, dict[str, float]]:
+    """yfinance statement frame (row labels x period-end columns) -> {period end: {label: value}}."""
+    if frame is None or getattr(frame, "empty", True):
+        return {}
+    columns: dict[date, dict[str, float]] = {}
+    for column in frame.columns:
+        fiscal_date = column.date() if hasattr(column, "date") else column
+        values = {}
+        for label, value in frame[column].items():
+            parsed = _number(value)
+            if parsed is not None:
+                values[str(label)] = parsed
+        columns[fiscal_date] = values
+    return columns
+
+
+def _statement_from_rows(fiscal_date: date, period: str, rows: dict[str, float]) -> Optional[FinancialStatementData]:
+    values: dict[str, Optional[float]] = {}
+    for field in STATEMENT_FIELDS:
+        value = next((rows[label] for label in _STATEMENT_ROWS[field] if label in rows), None)
+        values[field] = abs(value) if value is not None and field in _OUTFLOW_FIELDS else value
+    # yfinance pads older columns with empty rows; skip periods with neither revenue nor assets.
+    if values["revenue"] is None and values["total_assets"] is None:
+        return None
+    return FinancialStatementData(fiscal_date=fiscal_date, period=period, **values)
 
 
 def _chart_meta(symbol: str) -> dict[str, Any]:

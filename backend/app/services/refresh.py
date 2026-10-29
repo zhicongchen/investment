@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Company, FundamentalsSnapshot, Holding, PriceBar, Signal
-from app.providers.base import MarketDataProvider
+from app.models import Company, FinancialStatement, FundamentalsSnapshot, Holding, PriceBar, Signal
+from app.providers.base import STATEMENT_FIELDS, MarketDataProvider
 from app.services.analytics import BENCHMARK_TICKER
 from app.services.scoring import compute_signal, encode_list
+
+logger = logging.getLogger(__name__)
 
 
 def _ticker(value: str) -> str:
@@ -94,8 +97,34 @@ def refresh_ticker(db: Session, ticker: str, provider: MarketDataProvider) -> No
     existing_fundamentals.free_cash_flow = fundamentals.free_cash_flow
     existing_fundamentals.dividend_yield = fundamentals.dividend_yield
 
+    if company.ticker != BENCHMARK_TICKER:
+        refresh_statements(db, company.ticker, provider)
+
     db.flush()
     recompute_signal(db, company.ticker)
+
+
+def refresh_statements(db: Session, ticker: str, provider: MarketDataProvider) -> int:
+    """Upsert reported financial statements. A statements failure never fails the price refresh."""
+    try:
+        statements = provider.get_financial_statements(ticker)
+    except Exception as exc:
+        logger.warning("Financial statements for %s unavailable: %s", ticker, exc)
+        return 0
+    for data in statements:
+        existing = db.scalars(
+            select(FinancialStatement).where(
+                FinancialStatement.ticker == ticker,
+                FinancialStatement.period == data.period,
+                FinancialStatement.fiscal_date == data.fiscal_date,
+            )
+        ).first()
+        if existing is None:
+            existing = FinancialStatement(ticker=ticker, period=data.period, fiscal_date=data.fiscal_date)
+            db.add(existing)
+        for field in STATEMENT_FIELDS:
+            setattr(existing, field, getattr(data, field))
+    return len(statements)
 
 
 def recompute_signal(db: Session, ticker: str) -> Signal:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import logging
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import OPTIONS_REPORT_DIR
 from app.db import get_db
 from app.models import Company, FundamentalsSnapshot, Holding, PriceBar, Signal
 from app.providers.factory import market_data_provider
@@ -22,13 +21,16 @@ from app.schemas import (
     HoldingRead,
     HoldingUpsert,
     DemoImportResult,
+    FinancialAnalysisRead,
     MarketComparison,
     OllamaAnalysisRead,
     OllamaStatus,
+    OptionsScanRequest,
     PortfolioAnalytics,
     PricePoint,
     RefreshResult,
     SignalRead,
+    VerdictSummary,
     WatchlistRow,
 )
 from app.services.analytics import (
@@ -41,6 +43,8 @@ from app.services.analytics import (
     summary_metrics,
 )
 from app.services.refresh import ensure_company, recompute_signal, refresh_all, refresh_ticker
+from app.services.options_scan import ScanBusyError, dashboard_fundamentals, latest_scan, run_options_scan, scan_defaults
+from app.services.research import company_financial_analysis, statements_for
 from app.services.scoring import decode_list
 from app.services.ollama import (
     OllamaClient,
@@ -51,6 +55,7 @@ from app.services.ollama import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _signal_read(signal: Optional[Signal]) -> Optional[SignalRead]:
@@ -114,11 +119,23 @@ def list_watchlist(db: Session = Depends(get_db)) -> list[WatchlistRow]:
     rows: list[WatchlistRow] = []
     stale_before = date.today() - timedelta(days=5)
     benchmark_prices = prices_for(db, BENCHMARK_TICKER)
+    portfolio_value = _portfolio_value(db)
     for company in companies:
         latest = _latest_price(db, company.ticker)
         signal = _latest_signal(db, company.ticker)
         close = latest.adjusted_close if latest and latest.adjusted_close is not None else latest.close if latest else None
         prices = prices_for(db, company.ticker)
+        try:
+            analysis = company_financial_analysis(db, company.ticker, prices, benchmark_prices, portfolio_value)
+            verdict = VerdictSummary(
+                action=analysis["recommendation"]["action"],
+                conviction=analysis["recommendation"]["conviction"],
+                composite_score=analysis["composite_score"],
+                margin_of_safety=analysis["valuation"]["margin_of_safety"],
+            )
+        except Exception:
+            logger.exception("Financial analysis failed for %s", company.ticker)
+            verdict = None
         rows.append(
             WatchlistRow(
                 ticker=company.ticker,
@@ -130,6 +147,7 @@ def list_watchlist(db: Session = Depends(get_db)) -> list[WatchlistRow]:
                 signal=_signal_read(signal),
                 stale=latest is None or latest.date < stale_before,
                 metrics=summary_metrics(prices, benchmark_prices),
+                verdict=verdict,
             )
         )
     return rows
@@ -205,6 +223,14 @@ def company_detail(ticker: str, db: Session = Depends(get_db)) -> CompanyDetail:
         signals=[_signal_read(signal) for signal in signals if _signal_read(signal) is not None],
         holding=_holding_read(db, holding) if holding else None,
     )
+
+
+@router.get("/companies/{ticker}/financial-analysis", response_model=FinancialAnalysisRead)
+def financial_analysis(ticker: str, db: Session = Depends(get_db)) -> dict:
+    symbol = ticker.upper()
+    if db.get(Company, symbol) is None:
+        raise HTTPException(status_code=404, detail="Ticker not found")
+    return company_financial_analysis(db, symbol)
 
 
 @router.put("/companies/{ticker}/fundamentals", response_model=FundamentalsRead)
@@ -328,10 +354,41 @@ def list_portfolio_ollama_analyses(db: Session = Depends(get_db)) -> list[Ollama
     return [OllamaAnalysisRead.model_validate(item) for item in analysis_history(db, "portfolio")]
 
 
+@router.get("/options/defaults")
+def options_defaults(db: Session = Depends(get_db)) -> dict:
+    """Pre-filled scan settings: the dashboard watchlist plus the scanner's extra tickers."""
+    watchlist = db.scalars(select(Company.ticker).where(Company.active.is_(True)).order_by(Company.ticker.asc())).all()
+    return scan_defaults(list(watchlist))
+
+
+@router.post("/options/scan")
+def scan_options(payload: OptionsScanRequest, db: Session = Depends(get_db)) -> dict:
+    """Run the graded put-selling scan now. Takes seconds (Yahoo) to a few minutes (Moomoo, many tickers)."""
+
+    def analyze(ticker: str) -> Optional[dict]:
+        if db.get(Company, ticker) is None or not statements_for(db, ticker):
+            return None
+        return company_financial_analysis(db, ticker)
+
+    try:
+        return run_options_scan(
+            payload.tickers,
+            source=payload.source,
+            only_dipping=payload.only_dipping,
+            include_positions=payload.include_positions,
+            fundamentals=dashboard_fundamentals(analyze) if payload.fundamentals == "dashboard" else None,
+        )
+    except ScanBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Options scan failed")
+        raise HTTPException(status_code=502, detail=f"Options scan failed: {exc}") from exc
+
+
 @router.get("/options/latest")
 def latest_options_scan() -> dict:
-    """Latest put-selling scan written by `python -m options.cli scan|loop`."""
-    path = OPTIONS_REPORT_DIR / "latest.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="No put-selling scan yet. Run: python -m options.cli scan")
-    return json.loads(path.read_text(encoding="utf-8"))
+    """Latest put-selling scan, from the dashboard's Run scan or `python -m options.cli scan|loop`."""
+    scan = latest_scan()
+    if scan is None:
+        raise HTTPException(status_code=404, detail="No put-selling scan yet. Use Run scan above, or: python -m options.cli scan")
+    return scan

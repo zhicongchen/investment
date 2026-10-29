@@ -74,10 +74,30 @@ CREATE TABLE IF NOT EXISTS scan_candidates (
     open_interest INTEGER,
     otm_pct REAL,
     annualized_yield REAL,
-    score REAL
+    score REAL,
+    put_score REAL,
+    grade TEXT,
+    prob_profit REAL,
+    contract_iv_hv REAL,
+    earnings_in_trade INTEGER,
+    verdict TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scan_candidates_ticker ON scan_candidates(ticker, expiry, strike);
 """
+
+
+EDGE_COLUMNS = (
+    ("put_score", "REAL"),
+    ("grade", "TEXT"),
+    ("prob_profit", "REAL"),
+    ("contract_iv_hv", "REAL"),
+    ("earnings_in_trade", "INTEGER"),
+    ("verdict", "TEXT"),
+)
+CANDIDATE_COLUMNS = (
+    "scan_id, rank, ticker, code, expiry, dte, strike, spot, bid, ask, premium, delta, delta_estimated, iv, iv_rank, "
+    "iv_hv_ratio, open_interest, otm_pct, annualized_yield, score, " + ", ".join(column for column, _ in EDGE_COLUMNS)
+)
 
 
 class OptionsStore:
@@ -86,6 +106,10 @@ class OptionsStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn, conn:
             conn.executescript(SCHEMA)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(scan_candidates)")}
+            for column, kind in EDGE_COLUMNS:
+                if column not in existing:  # databases created before put scoring
+                    conn.execute(f"ALTER TABLE scan_candidates ADD COLUMN {column} {kind}")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
@@ -156,12 +180,13 @@ class OptionsStore:
                 ],
             )
             conn.executemany(
-                "INSERT INTO scan_candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                f"INSERT INTO scan_candidates ({CANDIDATE_COLUMNS}) VALUES ({', '.join('?' * 26)})",
                 [
                     (
                         scan_id, rank, item.ticker, item.code, item.expiry.isoformat(), item.dte, item.strike, item.spot,
                         item.bid, item.ask, item.premium, item.delta, int(item.delta_estimated), item.iv, item.iv_rank,
                         item.iv_hv_ratio, item.open_interest, item.otm_pct, item.annualized_yield, item.score,
+                        item.put_score, item.grade, item.prob_profit, item.contract_iv_hv, int(item.earnings_in_trade), item.verdict,
                     )
                     for rank, item in enumerate(result.candidates, 1)
                 ],

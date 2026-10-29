@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
@@ -40,6 +40,25 @@ class PutCandidate:
     iv_hv_ratio: Optional[float] = None
     contracts: Optional[int] = None
     score: float = 0.0
+    # Filled by options.edge.evaluate
+    hv_30d: Optional[float] = None
+    contract_iv_hv: Optional[float] = None
+    prob_otm: Optional[float] = None
+    prob_profit: Optional[float] = None
+    expected_move_pct: Optional[float] = None
+    strike_sd: Optional[float] = None
+    edge: Optional[float] = None
+    edge_pct: Optional[float] = None
+    earnings_date: Optional[date] = None
+    earnings_in_trade: bool = False
+    verdict: Optional[str] = None
+    fair_value: Optional[float] = None
+    buy_below: Optional[float] = None
+    breakeven_discount: Optional[float] = None
+    put_score: Optional[float] = None
+    grade: Optional[str] = None
+    reasons: list[str] = field(default_factory=list)
+    cautions: list[str] = field(default_factory=list)
 
 
 def select_puts(

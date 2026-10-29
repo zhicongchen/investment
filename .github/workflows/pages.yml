@@ -12,6 +12,8 @@ on:
       - "pages/**"
       - "options/**"
       - "shared/**"
+      - "backend/**"
+      - "requirements.txt"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
@@ -19,6 +21,8 @@ on:
       - "pages/**"
       - "options/**"
       - "shared/**"
+      - "backend/**"
+      - "requirements.txt"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -41,10 +45,26 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pages/requirements.txt
-      - run: pip install -r pages/requirements.txt
-      # Daily bars, fundamentals and the put scan for pages/watchlist.yaml, from Yahoo Finance.
+      - run: python -m pip install -r requirements.txt
+      - name: Read the watchlist
+        run: echo "TICKERS=$(python -m pages.build --print-tickers)" >> "$GITHUB_ENV"
+      # Daily bars and basic fundamentals for pages/watchlist.yaml, from Yahoo Finance.
       - run: python -m pages.build --out frontend/public/data
+      # The next two are optional: when Yahoo fails, the site still publishes prices and the
+      # tabs that need these files say they are missing.
+      - name: Financial analysis
+        continue-on-error: true
+        working-directory: backend
+        env:
+          MARKET_DATA_PROVIDER: yfinance
+        run: python -m app.analyze $TICKERS --json ../frontend/public/data/analysis.json > /dev/null
+      - name: Put scan
+        continue-on-error: true
+        env:
+          MARKET_DATA_PROVIDER: yfinance
+        run: |
+          python -m options.cli scan --source yahoo --tickers $TICKERS --all-tickers --no-positions --fundamentals live
+          cp reports/options/latest.json frontend/public/data/options-scan.json
 
       - uses: actions/setup-node@v4
         with:

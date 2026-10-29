@@ -1,178 +1,29 @@
-"""Yahoo Finance (yfinance) stand-in for MoomooClient, used by the daily GitHub Pages job.
+"""Moomoo-compatible market data from Yahoo Finance (yfinance), for scanning without OpenD.
 
-Yahoo has no greeks or IV rank: the scanner estimates delta with Black-Scholes and IV rank stays empty.
+Covers what the scanner needs: snapshots, daily bars, put chains with bid/ask/open interest,
+an IV overview (at-the-money IV and 30-day realized volatility; Yahoo has no IV rank) and the
+next earnings date. Yahoo option quotes are delayed about 15 minutes; outside market hours
+bid/ask can be empty, in which case the last trade is used and `used_last_trade` is set so the
+report can warn.
+
+Yahoo's own implied volatilities are not used: outside market hours they are placeholders
+(6.25%, 12.5%, ...) that make every put look riskless. IV is solved from the option price
+instead, so delta, probability of profit and IV/RV all match the premium being collected.
 """
 from __future__ import annotations
 
 import math
-import time
-from datetime import date, datetime
-from typing import Any, Callable, Optional
+from datetime import date, datetime, timedelta
+from typing import Any, Iterable, Optional
 
+from options.edge import realized_vol
+from options.pricing import implied_vol
+
+RISK_FREE_RATE = 0.04
 from shared.moomoo import DailyBar, OptionQuote, UnderlyingVol
 
-# Yahoo reports placeholder IVs (e.g. 1e-5) for contracts without a market.
-MIN_SANE_IV = 0.01
-MAX_SANE_IV = 5.0
-# How old a last trade may be when Yahoo has no bid/ask and it stands in for both.
-LAST_TRADE_MAX_AGE_DAYS = 3
 
-
-def _ticker_factory() -> Callable[[str], Any]:
-    import yfinance as yf
-
-    return yf.Ticker
-
-
-class YahooClient:
-    """Implements the client calls options.scanner.run_scan makes, backed by yfinance."""
-
-    def __init__(
-        self,
-        today: date,
-        bars: Optional[dict[str, list[DailyBar]]] = None,
-        ticker_factory: Optional[Callable[[str], Any]] = None,
-        pause_seconds: float = 0.5,
-        min_dte: int = 7,
-    ) -> None:
-        self.today = today
-        self.bars = bars if bars is not None else {}
-        self._ticker_factory = ticker_factory
-        self._tickers: dict[str, Any] = {}
-        self._chains: dict[tuple[str, date], list[Any]] = {}
-        self.pause_seconds = pause_seconds
-        self.min_dte = min_dte
-        self.last_price_fallbacks = 0
-
-    # ---- calls used by run_scan -------------------------------------------
-
-    def watchlist_tickers(self, groups: Any) -> dict[str, list[str]]:
-        # No Yahoo watchlists: the universe comes from config.watchlist.extra_tickers.
-        return {}
-
-    def stock_snapshots(self, tickers: list[str]) -> dict[str, dict[str, Any]]:
-        # Runs after the close, so the last daily bar already is the latest price.
-        return {}
-
-    def daily_bars(self, ticker: str, start: date, end: Optional[date] = None, adjusted: bool = True) -> list[DailyBar]:
-        if ticker not in self.bars:
-            history = self._ticker(ticker).history(start=start.isoformat(), auto_adjust=False)
-            self.bars[ticker] = bars_from_history(history)
-        return [bar for bar in self.bars[ticker] if bar.date >= start and (end is None or bar.date <= end)]
-
-    def underlying_vol(self, tickers: list[str]) -> dict[str, UnderlyingVol]:
-        """IV of the put nearest the money in the first expiry at least min_dte out, plus 30-day HV."""
-        result: dict[str, UnderlyingVol] = {}
-        for ticker in tickers:
-            closes = [bar.close for bar in self.bars.get(ticker, [])]
-            iv = None
-            expiries = [expiry for expiry in self._expiries(ticker) if (expiry - self.today).days >= self.min_dte]
-            if expiries and closes:
-                spot = closes[-1]
-                quotes = [row for row in self._chain(ticker, expiries[0]) if _sane_iv(row.get("impliedVolatility"))]
-                if quotes:
-                    nearest = min(quotes, key=lambda row: abs(float(row["strike"]) - spot))
-                    iv = _sane_iv(nearest.get("impliedVolatility"))
-            result[ticker] = UnderlyingVol(iv=iv, hv_30d=historical_vol(closes, 30))
-        return result
-
-    def put_chain_codes(self, ticker: str, first_expiry: date, last_expiry: date) -> list[tuple[str, date, float]]:
-        codes: list[tuple[str, date, float]] = []
-        for expiry in self._expiries(ticker):
-            if first_expiry <= expiry <= last_expiry:
-                codes.extend((str(row["contractSymbol"]), expiry, float(row["strike"])) for row in self._chain(ticker, expiry))
-        return codes
-
-    def option_quotes(self, ticker: str, contracts: list[tuple[str, date, float]]) -> list[OptionQuote]:
-        wanted = {code for code, _, _ in contracts}
-        quotes: list[OptionQuote] = []
-        for expiry in sorted({expiry for _, expiry, _ in contracts}):
-            for row in self._chain(ticker, expiry):
-                if row["contractSymbol"] in wanted:
-                    quotes.append(self._quote(ticker, expiry, row))
-        return quotes
-
-    # ---- helpers ----------------------------------------------------------
-
-    def _quote(self, ticker: str, expiry: date, row: dict[str, Any]) -> OptionQuote:
-        bid = _positive(row.get("bid"))
-        ask = _positive(row.get("ask"))
-        last = _positive(row.get("lastPrice"))
-        if (bid is None or ask is None) and last is not None and self._recent(row.get("lastTradeDate")):
-            bid = ask = last
-            self.last_price_fallbacks += 1
-        return OptionQuote(
-            code=str(row["contractSymbol"]),
-            ticker=ticker,
-            expiry=expiry,
-            strike=float(row["strike"]),
-            bid=bid,
-            ask=ask,
-            last=last,
-            iv=_sane_iv(row.get("impliedVolatility")),
-            open_interest=_int(row.get("openInterest")),
-            volume=_int(row.get("volume")),
-        )
-
-    def _recent(self, value: Any) -> bool:
-        try:
-            traded = value.date() if hasattr(value, "date") else datetime.fromisoformat(str(value)[:10]).date()
-        except (TypeError, ValueError):
-            return False
-        return (self.today - traded).days <= LAST_TRADE_MAX_AGE_DAYS
-
-    def _ticker(self, ticker: str) -> Any:
-        if ticker not in self._tickers:
-            factory = self._ticker_factory or _ticker_factory()
-            self._tickers[ticker] = factory(ticker)
-        return self._tickers[ticker]
-
-    def _expiries(self, ticker: str) -> list[date]:
-        return [datetime.strptime(value, "%Y-%m-%d").date() for value in (self._ticker(ticker).options or ())]
-
-    def _chain(self, ticker: str, expiry: date) -> list[dict[str, Any]]:
-        key = (ticker, expiry)
-        if key not in self._chains:
-            time.sleep(self.pause_seconds)
-            puts = self._ticker(ticker).option_chain(expiry.isoformat()).puts
-            self._chains[key] = puts.to_dict("records")
-        return self._chains[key]
-
-
-def bars_from_history(history: Any) -> list[DailyBar]:
-    """Raw (split-adjusted, not dividend-adjusted) daily bars so the spot matches option strikes."""
-    bars: list[DailyBar] = []
-    if history is None or history.empty:
-        return bars
-    for index, row in history.iterrows():
-        close = _number(row.get("Close"))
-        if close is None:
-            continue
-        high = _number(row.get("High"))
-        bars.append(
-            DailyBar(
-                date=index.date(),
-                high=high if high is not None else close,
-                close=close,
-                open=_number(row.get("Open")),
-                low=_number(row.get("Low")),
-                volume=_number(row.get("Volume")),
-            )
-        )
-    return bars
-
-
-def historical_vol(closes: list[float], window: int) -> Optional[float]:
-    recent = closes[-(window + 1) :]
-    if len(recent) < window + 1:
-        return None
-    returns = [math.log(recent[index] / recent[index - 1]) for index in range(1, len(recent))]
-    mean = sum(returns) / len(returns)
-    variance = sum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
-    return math.sqrt(variance) * math.sqrt(252)
-
-
-def _number(value: Any) -> Optional[float]:
+def _num(value: Any) -> Optional[float]:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
@@ -180,16 +31,226 @@ def _number(value: Any) -> Optional[float]:
     return parsed if math.isfinite(parsed) else None
 
 
-def _positive(value: Any) -> Optional[float]:
-    parsed = _number(value)
-    return parsed if parsed is not None and parsed > 0 else None
-
-
-def _sane_iv(value: Any) -> Optional[float]:
-    parsed = _number(value)
-    return parsed if parsed is not None and MIN_SANE_IV <= parsed <= MAX_SANE_IV else None
-
-
 def _int(value: Any) -> Optional[int]:
-    parsed = _number(value)
+    parsed = _num(value)
     return int(parsed) if parsed is not None else None
+
+
+def _as_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if hasattr(value, "date"):
+        try:
+            return value.date()
+        except Exception:
+            return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+class YahooOptionsClient:
+    def __init__(self, yf: Any = None) -> None:
+        if yf is None:
+            import yfinance as yf  # imported lazily so Moomoo-only installs never need it
+        self._yf = yf
+        self._tickers: dict[str, Any] = {}
+        self._chains: dict[tuple[str, date], Any] = {}
+        self.used_last_trade = False
+
+    # The scanner and CLI treat this like a MoomooClient. Each scan calls connect(), which drops the
+    # previous scan's chains so a loop never reuses stale quotes.
+    def connect(self) -> None:
+        self._tickers.clear()
+        self._chains.clear()
+        self.used_last_trade = False
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> "YahooOptionsClient":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def _ticker(self, symbol: str) -> Any:
+        if symbol not in self._tickers:
+            self._tickers[symbol] = self._yf.Ticker(symbol)
+        return self._tickers[symbol]
+
+    def watchlist_tickers(self, groups: Iterable[str]) -> dict[str, list[str]]:
+        return {}  # no watchlists on Yahoo: the universe comes from extra_tickers / --tickers
+
+    def stock_snapshots(self, tickers: list[str]) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for ticker in tickers:
+            history = self._ticker(ticker).history(period="5d", auto_adjust=False)
+            if history is None or history.empty:
+                continue
+            closes = [_num(value) for value in history["Close"].tolist()]
+            closes = [value for value in closes if value]
+            if not closes:
+                continue
+            result[ticker] = {
+                "last_price": closes[-1],
+                "prev_close": closes[-2] if len(closes) >= 2 else None,
+                "update_time": str(history.index[-1])[:19],
+            }
+        return result
+
+    def daily_bars(self, ticker: str, start: date, end: Optional[date] = None, adjusted: bool = True) -> list[DailyBar]:
+        history = self._ticker(ticker).history(
+            start=start.isoformat(), end=(end or date.today() + timedelta(days=1)).isoformat(), auto_adjust=adjusted
+        )
+        bars: list[DailyBar] = []
+        if history is None or history.empty:
+            return bars
+        for index, row in history.iterrows():
+            close, high = _num(row.get("Close")), _num(row.get("High"))
+            if close is None:
+                continue
+            bars.append(
+                DailyBar(
+                    date=_as_date(index) or date.today(),
+                    high=high if high is not None else close,
+                    close=close,
+                    open=_num(row.get("Open")),
+                    low=_num(row.get("Low")),
+                    volume=_num(row.get("Volume")),
+                )
+            )
+        return bars
+
+    def underlying_vol(self, tickers: list[str]) -> dict[str, UnderlyingVol]:
+        result: dict[str, UnderlyingVol] = {}
+        today = date.today()
+        for ticker in tickers:
+            bars = self.daily_bars(ticker, today - timedelta(days=70))
+            closes = [bar.close for bar in bars]
+            hv = realized_vol(closes, 30)
+            atm_iv = None
+            if closes:
+                atm_iv = self._atm_iv(ticker, closes[-1], today)
+            result[ticker] = UnderlyingVol(iv=atm_iv, hv_30d=hv)
+        return result
+
+    def _atm_iv(self, ticker: str, spot: float, today: date) -> Optional[float]:
+        """Average IV of the two puts nearest the money in the expiry closest to 30 days out."""
+        expiries = [expiry for expiry in self._expiries(ticker) if expiry > today]
+        if not expiries:
+            return None
+        target = min(expiries, key=lambda expiry: abs((expiry - today).days - 30))
+        frame = self._chain(ticker, target)
+        if frame is None or frame.empty:
+            return None
+        rows = sorted(frame.to_dict("records"), key=lambda row: abs((_num(row.get("strike")) or 0) - spot))[:2]
+        years = max((target - today).days, 1) / 365.0
+        ivs = []
+        for row in rows:
+            price = _quote_price(row)
+            strike = _num(row.get("strike"))
+            if price and strike:
+                iv = implied_vol(price, spot, strike, years, RISK_FREE_RATE)
+                if iv:
+                    ivs.append(iv)
+        return sum(ivs) / len(ivs) if ivs else None
+
+    def _expiries(self, ticker: str) -> list[date]:
+        try:
+            raw = self._ticker(ticker).options or ()
+        except Exception:
+            return []
+        return [parsed for parsed in (_as_date(value) for value in raw) if parsed]
+
+    def _chain(self, ticker: str, expiry: date) -> Any:
+        key = (ticker, expiry)
+        if key not in self._chains:
+            self._chains[key] = self._ticker(ticker).option_chain(expiry.isoformat()).puts
+        return self._chains[key]
+
+    def put_chain_codes(self, ticker: str, first_expiry: date, last_expiry: date) -> list[tuple[str, date, float]]:
+        found: list[tuple[str, date, float]] = []
+        for expiry in self._expiries(ticker):
+            if not first_expiry <= expiry <= last_expiry:
+                continue
+            frame = self._chain(ticker, expiry)
+            for row in frame.to_dict("records") if frame is not None else []:
+                strike = _num(row.get("strike"))
+                if strike is not None and row.get("contractSymbol"):
+                    found.append((str(row["contractSymbol"]), expiry, strike))
+        return found
+
+    def option_quotes(self, ticker: str, contracts: list[tuple[str, date, float]]) -> list[OptionQuote]:
+        wanted = {code for code, _, _ in contracts}
+        quotes: list[OptionQuote] = []
+        for expiry in sorted({expiry for _, expiry, _ in contracts}):
+            frame = self._chain(ticker, expiry)
+            for row in frame.to_dict("records") if frame is not None else []:
+                code = str(row.get("contractSymbol"))
+                if code not in wanted:
+                    continue
+                bid, ask, last = _num(row.get("bid")), _num(row.get("ask")), _num(row.get("lastPrice"))
+                if not bid or not ask:
+                    if not last:
+                        bid = ask = None
+                    else:
+                        bid = ask = last  # market closed: last trade stands in for the quote
+                        self.used_last_trade = True
+                quotes.append(
+                    OptionQuote(
+                        code=code,
+                        ticker=ticker,
+                        expiry=expiry,
+                        strike=float(row["strike"]),
+                        bid=bid,
+                        ask=ask,
+                        last=last,
+                        iv=None,  # solved from the price by the scanner; see module docstring
+                        open_interest=_int(row.get("openInterest")),
+                        volume=_int(row.get("volume")),
+                    )
+                )
+        return quotes
+
+    def next_earnings(self, ticker: str) -> Optional[date]:
+        return next_earnings_date(ticker, self._ticker(ticker))
+
+
+def _quote_price(row: dict[str, Any]) -> Optional[float]:
+    bid, ask = _num(row.get("bid")), _num(row.get("ask"))
+    if bid and ask and ask >= bid:
+        return (bid + ask) / 2
+    return _num(row.get("lastPrice")) or None
+
+
+def next_earnings_date(ticker: str, stock: Any = None, today: Optional[date] = None) -> Optional[date]:
+    """Next scheduled earnings date from Yahoo, or None when unknown."""
+    today = today or date.today()
+    if stock is None:
+        import yfinance as yf
+
+        stock = yf.Ticker(ticker)
+    candidates: list[date] = []
+    try:
+        calendar = stock.calendar or {}
+        raw = calendar.get("Earnings Date") if isinstance(calendar, dict) else None
+        for value in raw if isinstance(raw, (list, tuple)) else [raw]:
+            parsed = _as_date(value)
+            if parsed:
+                candidates.append(parsed)
+    except Exception:
+        pass
+    if not candidates:
+        try:
+            frame = stock.get_earnings_dates(limit=8)
+            candidates = [parsed for parsed in (_as_date(value) for value in frame.index) if parsed] if frame is not None else []
+        except Exception:
+            pass
+    upcoming = sorted(day for day in candidates if day >= today)
+    return upcoming[0] if upcoming else None

@@ -10,7 +10,7 @@ import yaml
 BASE_DIR = Path(__file__).resolve().parents[1]
 CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
-RANKING_METRICS = ("annualized_yield", "iv_rank", "iv_hv_ratio", "blend")
+RANKING_METRICS = ("put_score", "annualized_yield", "iv_rank", "iv_hv_ratio", "blend")
 
 
 @dataclass
@@ -72,6 +72,7 @@ class DipConfig:
     rule: str = "any"
     checks: DipChecks = field(default_factory=DipChecks)
     require_above_ma: TrendFilter = field(default_factory=TrendFilter)
+    required: bool = True  # False: look for puts on every ticker, dips only add to the score
 
 
 @dataclass
@@ -97,6 +98,17 @@ class RankingConfig:
         default_factory=lambda: {"annualized_yield": 0.5, "iv_rank": 0.3, "iv_hv_ratio": 0.2}
     )
     top_n: int = 20
+
+
+@dataclass
+class EdgeConfig:
+    enabled: bool = True
+    earnings: str = "penalize"  # penalize | exclude | ignore
+    exclude_fundamental_avoid: bool = True
+    min_prob_profit: Optional[float] = None
+    hv_days: int = 30
+    # dashboard: read data/dashboard.db | live: fetch statements now (slow) | off
+    fundamentals: str = "dashboard"
 
 
 @dataclass
@@ -154,6 +166,7 @@ class OptionsConfig:
     puts: PutsConfig = field(default_factory=PutsConfig)
     ranking: RankingConfig = field(default_factory=RankingConfig)
     sizing: SizingConfig = field(default_factory=SizingConfig)
+    edge: EdgeConfig = field(default_factory=EdgeConfig)
     management: ManagementConfig = field(default_factory=ManagementConfig)
     ibkr: IbkrConfig = field(default_factory=IbkrConfig)
     loop: LoopConfig = field(default_factory=LoopConfig)
@@ -194,6 +207,10 @@ def _validate(config: OptionsConfig) -> None:
         raise ValueError(f"dip.rule must be 'any' or 'all', got {config.dip.rule!r}")
     if config.ranking.metric not in RANKING_METRICS:
         raise ValueError(f"ranking.metric must be one of {RANKING_METRICS}, got {config.ranking.metric!r}")
+    if config.edge.earnings not in {"penalize", "exclude", "ignore"}:
+        raise ValueError(f"edge.earnings must be penalize, exclude or ignore, got {config.edge.earnings!r}")
+    if config.edge.fundamentals not in {"dashboard", "live", "off"}:
+        raise ValueError(f"edge.fundamentals must be dashboard, live or off, got {config.edge.fundamentals!r}")
     if config.puts.price_basis not in {"mid", "bid"}:
         raise ValueError(f"puts.price_basis must be 'mid' or 'bid', got {config.puts.price_basis!r}")
     if config.puts.min_dte > config.puts.max_dte:

@@ -1,11 +1,12 @@
-"""Fetch the online dashboard's data from Yahoo Finance and write it as static JSON.
+"""Fetch the online dashboard's price data from Yahoo Finance and write it as static JSON.
 
 Run once a day after the US close by .github/workflows/pages.yml:
 
     python -m pages.build --out frontend/public/data
 
-Writes market.json (companies, fundamentals), prices/<TICKER>.json (daily bars) and
-options-scan.json (the put scanner run over the watchlist with options/config.yaml).
+Writes market.json (companies, fundamentals) and prices/<TICKER>.json (daily bars). The same
+workflow adds analysis.json (`python -m app.analyze`) and options-scan.json
+(`python -m options.cli scan --source yahoo`) for the tickers `--print-tickers` lists.
 """
 from __future__ import annotations
 
@@ -17,18 +18,14 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 import yaml
 
-from options.config import load_config
-from options.report import to_dict
-from options.scanner import ET, run_scan
-from options.yahoo import YahooClient, bars_from_history
-
 WATCHLIST_PATH = Path(__file__).resolve().parent / "watchlist.yaml"
 BENCHMARK = "SPY"
+ET = ZoneInfo("America/New_York")
 HISTORY_PERIOD = "5y"
-NO_GREEKS_WARNING = "Moomoo returned option quotes without greeks"
 
 
 def load_watchlist(path: Path = WATCHLIST_PATH) -> list[str]:
@@ -43,7 +40,6 @@ def build(out_dir: Path, tickers: list[str], ticker_factory: Callable[[str], Any
     companies: list[dict[str, str]] = []
     fundamentals: dict[str, dict[str, Any]] = {}
     errors: dict[str, str] = {}
-    bars = {}
 
     for ticker in dict.fromkeys([*tickers, BENCHMARK]):
         try:
@@ -53,7 +49,6 @@ def build(out_dir: Path, tickers: list[str], ticker_factory: Callable[[str], Any
             if not rows:
                 raise ValueError("Yahoo returned no price history")
             _write(prices_dir / f"{ticker}.json", rows)
-            bars[ticker] = bars_from_history(history)
             if ticker in tickers:
                 info = _info(handle)
                 companies.append(company(ticker, info))
@@ -61,19 +56,6 @@ def build(out_dir: Path, tickers: list[str], ticker_factory: Callable[[str], Any
         except Exception as exc:
             errors[ticker] = str(exc) or exc.__class__.__name__
         time.sleep(pause_seconds)
-
-    config = load_config()
-    config.watchlist.extra_tickers = sorted(set(tickers) | set(config.watchlist.extra_tickers))
-    client = YahooClient(today=now.date(), bars=bars, ticker_factory=ticker_factory, pause_seconds=pause_seconds, min_dte=config.puts.min_dte)
-    scan = run_scan(config, client, now=now)
-    scan.positions_status = "IBKR positions are not available in the online version."
-    scan.warnings = [warning for warning in scan.warnings if NO_GREEKS_WARNING not in warning]
-    scan.warnings.append("Yahoo Finance has no greeks or IV rank: delta is estimated with Black-Scholes (marked *).")
-    if client.last_price_fallbacks:
-        scan.warnings.append(
-            f"{client.last_price_fallbacks} option quote(s) had no bid/ask on Yahoo; their last trade price was used for both."
-        )
-    _write(out_dir / "options-scan.json", to_dict(scan))
 
     market = {
         "generated_at": now.isoformat(),
@@ -148,13 +130,20 @@ def _write(path: Path, payload: Any) -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", type=Path, required=True, help="directory for the JSON files")
+    parser.add_argument("--out", type=Path, help="directory for the JSON files")
     parser.add_argument("--watchlist", type=Path, default=WATCHLIST_PATH)
+    parser.add_argument("--print-tickers", action="store_true", help="print the watchlist tickers and exit")
     args = parser.parse_args(argv)
+
+    tickers = load_watchlist(args.watchlist)
+    if args.print_tickers:
+        print(" ".join(tickers))
+        return 0
+    if args.out is None:
+        parser.error("--out is required")
 
     import yfinance as yf
 
-    tickers = load_watchlist(args.watchlist)
     market = build(args.out, tickers, yf.Ticker, datetime.now(ET))
     fetched = len(market["tickers"])
     print(f"Fetched {fetched}/{len(tickers)} tickers into {args.out}")

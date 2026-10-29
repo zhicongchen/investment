@@ -13,8 +13,16 @@ Pipeline per scan:
 1. **Universe**: US stocks/ETFs in your Moomoo watchlist groups (`watchlist.groups`, empty = all groups) plus `extra_tickers`.
 2. **Going down**: daily bars + live snapshot → `% below N-day high`, `N-day return`, `RSI`, `today's move`. Pick which checks count in `dip.checks` and combine them with `dip.rule: any|all`. An optional `require_above_ma` filter skips falling knives.
 3. **Puts**: OTM puts with 7–45 DTE for dipping stocks only, filtered by delta, OTM %, bid, spread and open interest. If Moomoo returns no greeks, delta/IV are estimated with Black-Scholes and marked `*`.
-4. **Ranking** (`ranking.metric`): `annualized_yield` (premium ÷ strike × 365 ÷ DTE), `iv_rank` (from Moomoo's option overview), `iv_hv_ratio` (IV ÷ 30-day HV) or `blend` (weighted percentile of all three). Switch metrics in config to compare them.
-5. **Open positions**: short puts from TWS are priced via Moomoo → `TAKE PROFIT` (≥50% credit captured), `ROLL / DEFEND` (spot below strike or delta ≤ −0.50), `CLOSE OR ROLL` (≤7 DTE), else `HOLD`. If TWS is not running the scan still works.
+4. **Ranking** (`ranking.metric`): `put_score` (default, below), `annualized_yield` (premium ÷ strike × 365 ÷ DTE), `iv_rank` (from Moomoo's option overview), `iv_hv_ratio` (IV ÷ 30-day HV) or `blend` (weighted percentile of all three). Switch metrics in config to compare them.
+5. **Put score and grade** (`ranking.metric: put_score`, settings under `edge`): each put gets a 0-100 score and an A/B/C grade from what decides whether a short put is worth selling:
+   - **Premium richness**: the contract's IV vs 30-day realized volatility (plus IV rank when Moomoo provides it), and the premium's edge over its Black-Scholes value at realized volatility.
+   - **Odds**: probability of finishing above breakeven, and how many expected moves (one standard deviation at the contract's IV) the strike sits below spot.
+   - **Event risk**: the next earnings date from Yahoo. Earnings before expiry costs 15 points and caps the grade at B (`edge.earnings: exclude` drops those puts).
+   - **The underlying**: the dashboard's financial-analysis verdict and fair value. Puts on stocks rated AVOID or SELL_REVIEW are dropped, a strike at or below the buy-below price scores higher, and the report shows breakeven vs fair value. With `edge.fundamentals: dashboard` this reads `data/dashboard.db` (refresh the dashboard first); `live` downloads statements during the scan; without a verdict the grade is capped at B.
+   - **Time to expiry**: 30-45 days scores best; weekly puts are marked down for gamma risk even though their annualized yield looks high.
+   - **Liquidity** (bid/ask spread) and a small bonus for selling into a dip.
+   The report lists the reasons and cautions behind each of the top puts.
+6. **Open positions**: short puts from TWS are priced via Moomoo → `TAKE PROFIT` (≥50% credit captured), `ROLL / DEFEND` (spot below strike or delta ≤ −0.50), `CLOSE OR ROLL` (≤7 DTE), else `HOLD`. If TWS is not running the scan still works.
 
 Setup: install and log in to [moomoo OpenD](https://www.moomoo.com/download/OpenAPI) (default `127.0.0.1:11111`), then:
 
@@ -28,20 +36,29 @@ python -m options.cli loop         # scan every 30 min during US market hours (C
 python -m options.cli history      # recent scans and their top put
 ```
 
+No OpenD? `--source yahoo` scans Yahoo Finance instead (quotes delayed about 15 minutes, no IV rank; outside market hours the last trade stands in for bid/ask and the report warns). Pass tickers with `--tickers`, and `--all-tickers` to look for puts on every ticker rather than only dipping ones:
+
+```bash
+python -m options.cli scan --source yahoo --tickers AAPL MSFT NVDA META --all-tickers --no-positions --fundamentals live
+```
+
 Options: `--no-positions` skips TWS, `--interval 15` changes the loop period, `--any-time` loops outside market hours, `--refresh-cache` re-downloads daily bars and chain listings, `--config path.yaml` uses another config. All thresholds live in `options/config.yaml`.
 
 Every scan is stored in `data/options.db` (`scans`, `scan_dips`, `scan_candidates`: each ranked put with its yield, IV, IV rank and IV/HV). That history is what you use to compare ranking metrics later, e.g. `SELECT ticker, strike, expiry, annualized_yield, iv_rank FROM scan_candidates WHERE rank <= 5`. The same database holds a per-day cache of daily bars and option-chain listings, so only the first scan of the day pays for those rate-limited requests; later loop iterations only fetch live quotes. `reports/options/latest.*` is rewritten every scan, and a timestamped copy is kept only when the ranked puts or position actions change.
 
-The dashboard's **Put Signals** tab shows `reports/options/latest.json` and reloads every minute while the backend is running.
+The dashboard's **Put Signals** tab runs the same scan from the browser: enter tickers (pre-filled with your dashboard watchlist), pick the data source (Auto uses Moomoo OpenD when it is running, otherwise delayed Yahoo data), choose whether to scan only stocks that are going down, check fundamentals and include your IBKR short puts, then press **Run scan** (`POST /api/options/scan`). Results show each put's grade, score, odds, IV vs realized, earnings and the stock's verdict, the reasons and cautions behind the top 12, and why tickers without puts were filtered out. Fundamentals come from the dashboard database; tickers it has no statements for are analyzed on the fly. Every scan is also saved to the scan history and to `reports/options/latest.*`, which the tab reloads every minute, so CLI and browser scans show up in the same place.
 
 Notes and limits:
 
 - OpenD rate-limits option chains (~10 requests / 30 s). Chains are fetched only for dipping stocks, each 7–45 DTE window takes two requests, and listings are cached for the day, so only the first scan with a large dip list takes a few minutes.
 - Daily history counts against Moomoo's 30-day per-stock kline quota; `check` shows what's left.
 - Market hours ignore exchange holidays; on those days the loop just produces unchanged scans.
-- Earnings dates are not checked. Look before selling a put that expires after earnings.
+- Earnings dates come from Yahoo and can be missing or unconfirmed for some tickers; check the date before selling a put across it.
+- Probability of profit is risk-neutral (from implied volatility), not a forecast; realized outcomes depend on the market regime.
 
 Run its tests with `python -m pytest tests/options`.
+
+**Scheduled cloud scans.** GitHub Actions (`.github/workflows/ci.yml`) runs the live financial analysis and the put scan on Yahoo data every weekday at 14:47 and 19:47 UTC, which is inside US market hours all year (10:47 / 15:47 ET in daylight time, 9:47 / 14:47 ET in standard time). Each run's report is on its summary page (Actions → CI → the run) and attached as the `put-signals` and `financial-analysis` artifacts. The tickers default to `GOOGL MSFT AMZN INTC`; change the default in the workflow, or use **Run workflow** with your own list. GitHub may start scheduled runs some minutes late, does not skip exchange holidays, and pauses schedules after 60 days without repository activity.
 
 ## Project Layout
 
@@ -56,7 +73,7 @@ Run its tests with `python -m pytest tests/options`.
 
 ## Local Databases
 
-- `data/dashboard.db` - Web dashboard research data: watchlist, prices, fundamentals, manual holdings, signals, and local AI analyses.
+- `data/dashboard.db` - Web dashboard research data: watchlist, prices, fundamentals, reported financial statements, manual holdings, signals, and local AI analyses.
 - `data/options.db` - Put-selling scan history plus the scanner's per-day market data cache.
 - `data/ibkr_bot_audit.db` - Standalone IBKR bot audit data: runs, decisions, risk checks, synced positions, submitted orders, and fills.
 
@@ -96,6 +113,21 @@ uvicorn app.main:app --reload --port 8000
 
 When `FMP_API_KEY` is present, refreshes keep the price provider above and use Financial Modeling Prep for PE, forward PE, growth, debt-to-equity, free cash flow, and dividend yield. Without a key, the app keeps the existing `yfinance` fundamentals fallback. You can also edit fundamentals manually from the selected company panel.
 
+### Financial Analysis and Buy/Hold Verdict
+
+Each refresh also downloads up to five years of annual and eight quarters of reported financial statements (income statement, balance sheet, cash flow) from yfinance, or from FMP when `FMP_API_KEY` is set (FMP quarterly statements need a paid plan; annual still works). They are stored in the `financial_statements` table and analyzed on demand by `GET /api/companies/{ticker}/financial-analysis`, shown in the selected-company panel and as the **Verdict** column of the watchlist.
+
+What the analysis computes (`backend/app/services/financials.py`):
+
+- **Ratios on trailing twelve months** (sum of the last four quarters; latest fiscal year if quarters are missing): gross/operating/net/FCF margins, ROE, ROIC on average invested capital, FCF conversion, Sloan accruals ratio, stock-comp intensity, current/quick ratio, debt/equity, net debt/EBITDA, interest coverage, payout ratio, buyback and dividend yield.
+- **Growth**: 3-year revenue, diluted EPS and FCF CAGR, operating-margin trend, share-count change, and the forward EPS growth implied by trailing vs forward P/E.
+- **Accounting scores**: Piotroski F-score (9 tests, with the pass/fail list) and Altman Z-score (distress < 1.81, safe > 2.99).
+- **Intrinsic value**: two-stage DCF on free cash flow to the firm (5 years at a growth rate blended from history and forward estimates, capped at 20%, fading to terminal growth over years 6-10), discounted at WACC with a CAPM cost of equity and a 2-year regression beta vs SPY. Bear/base/bull scenarios give a fair-value range, a **buy-below price** (base value less the required margin of safety) and a **rich-above price**. A reverse DCF solves for the growth rate the current price implies. Banks and insurers use a justified price-to-book model (ROE vs cost of equity) instead.
+- **Five pillars scored 0-100**: profitability & quality (25%), financial strength (20%), growth (20%), valuation (25%), price momentum (10%), plus red flags such as negative operating cash flow, distress-zone Z-score, thin interest coverage, heavy leverage, dilution, low-quality earnings and "priced for perfection".
+- **Verdict**: not owned → `BUY`, `ACCUMULATE` (good business at a fair price, build gradually), `WATCH` (wait for the buy-below price) or `AVOID`; owned → `ADD`, `HOLD`, `TRIM` (far above fair value or overweight vs target) or `SELL_REVIEW` (red flags with a weak score). Each verdict comes with conviction, a written summary, strengths, concerns, the price levels and events that would change it, and a timing note when price momentum disagrees with fundamentals.
+
+Valuation inputs are set in `backend/.env`: `RISK_FREE_RATE` (keep it near the current 10-year Treasury yield), `EQUITY_RISK_PREMIUM`, `TERMINAL_GROWTH_RATE` and `REQUIRED_MARGIN_OF_SAFETY`. The Ollama ticker memo receives the full analysis and is asked to check the verdict against the numbers. The older 7-field signal is kept as the "quick screen". The verdict is a model of reported numbers: it knows nothing about news, guidance, competitive changes or one-off items, so treat it as a starting point for your own research.
+
 ## Frontend Setup
 
 ```bash
@@ -117,26 +149,28 @@ npm run build
 
 ### Online Dashboard (GitHub Pages)
 
-`.github/workflows/pages.yml` publishes the dashboard to `https://zhicongchen.github.io/investment/`. It needs no backend, Moomoo, TWS, Ollama or API key:
+`.github/workflows/pages.yml` publishes the dashboard to `https://zhicongchen.github.io/investment/`. It needs no backend, Moomoo, TWS, Ollama or API key. Each run does the following for the tickers in `pages/watchlist.yaml`, using Yahoo Finance data:
 
-1. **Data job**: `python -m pages.build` downloads five years of daily bars and basic fundamentals from Yahoo Finance (`yfinance`) for the tickers in `pages/watchlist.yaml`. It then runs the put scanner on Yahoo option chains with the thresholds in `options/config.yaml`, and writes JSON files that ship with the site.
-2. **Site**: the frontend is built in browser mode (`VITE_DATA_MODE=browser`) and reads those files. Signals, metrics and charts are computed in the browser with the same rules as the backend.
+1. `python -m pages.build` downloads five years of daily bars and basic fundamentals.
+2. `python -m app.analyze` runs the backend's financial analysis and buy/hold verdict.
+3. `python -m options.cli scan --source yahoo --all-tickers --no-positions --fundamentals live` grades puts to sell, with the thresholds in `options/config.yaml`.
+4. The frontend is built in browser mode (`VITE_DATA_MODE=browser`) and reads those JSON files. Signals, metrics and charts are computed in the browser with the same rules as the backend.
 
-The workflow runs every weekday at 21:37 UTC (after the US close all year), on every push to `main` that touches `frontend/`, `pages/`, `options/` or `shared/`, and on demand from the **Actions** tab. To change the watchlist, edit `pages/watchlist.yaml` on GitHub; the commit rebuilds the site.
+The workflow runs every weekday at 21:37 UTC (after the US close all year), on every push to `main` that touches the code it uses, and on demand from the **Actions** tab. To change the watchlist, edit `pages/watchlist.yaml` on GitHub; the commit rebuilds the site.
 
 Differences from the local version:
 
-- **Data**: daily closes only, as of the last run. Yahoo Finance is an unofficial source and occasionally fails or rate-limits. Tickers it could not fetch are listed under **Settings**.
-- **Put signals**: Yahoo has no greeks or IV rank, so delta is estimated with Black-Scholes (marked `*`) and IV rank shows n/a. Rank by `annualized_yield`, `iv_hv_ratio` or `blend`. When Yahoo has no bid/ask for a contract, its last trade price stands in for both, and the scan says how many times that happened. IBKR short-put advice isn't available.
-- **Your data**: holdings and manually entered fundamentals are stored only in your browser (**Settings → Clear Data in This Browser** removes them). They are never uploaded.
-- **Not available**: adding tickers from the page, Ollama analysis and the demo CSV import.
+- **Data**: daily closes and delayed option quotes, as of the last run. Yahoo Finance is an unofficial source and occasionally fails or rate-limits. Tickers it could not fetch are listed under **Settings**. If the analysis or put scan step fails, the site still publishes prices and those views say the data is missing.
+- **Put signals**: same grading as `options.cli scan --source yahoo`. Yahoo has no IV rank, and IBKR short-put advice isn't available.
+- **Your data**: holdings and manually entered fundamentals are stored only in your browser (**Settings → Clear Data in This Browser** removes them). They are never uploaded. The published financial analysis and put grades don't take your holdings into account.
+- **Not available**: adding tickers from the page, running a scan from the page, Ollama analysis and the demo CSV import.
 
-One-time setup: in the repository on GitHub, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Then run the workflow from the **Actions** tab. GitHub Pages on a private repository needs a paid GitHub plan. The published site is public: anyone with the link can see the watchlist, prices and put scan, but not your holdings.
+One-time setup: in the repository on GitHub, go to **Settings → Pages** and set **Source** to **GitHub Actions**. Then run the workflow from the **Actions** tab. GitHub Pages on a private repository needs a paid GitHub plan. The published site is public: anyone with the link can see the watchlist, prices, analysis and put scan, but not your holdings.
 
-To try browser mode locally:
+To try browser mode locally (prices only; copy `reports/options/latest.json` to `frontend/public/data/options-scan.json` after a scan to include puts):
 
 ```bash
-python -m pip install -r pages/requirements.txt
+python -m pip install -r requirements.txt
 python -m pages.build --out frontend/public/data
 cd frontend
 VITE_DATA_MODE=browser npm run dev

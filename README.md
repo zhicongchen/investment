@@ -58,6 +58,8 @@ Notes and limits:
 
 Run its tests with `python -m pytest tests/options`.
 
+**Scheduled cloud scans.** GitHub Actions (`.github/workflows/ci.yml`) runs the live financial analysis and the put scan on Yahoo data every weekday at 14:47 and 19:47 UTC, which is inside US market hours all year (10:47 / 15:47 ET in daylight time, 9:47 / 14:47 ET in standard time). Each run's report is on its summary page (Actions → CI → the run) and attached as the `put-signals` and `financial-analysis` artifacts. The tickers default to `GOOGL MSFT AMZN INTC`; change the default in the workflow, or use **Run workflow** with your own list. GitHub may start scheduled runs some minutes late, does not skip exchange holidays, and pauses schedules after 60 days without repository activity.
+
 ## Project Layout
 
 - `options/` - Moomoo put-selling signal scanner (dip detection, put ranking, IBKR short-put advice, reports, scan history).

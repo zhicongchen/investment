@@ -6,11 +6,19 @@ on:
   workflow_dispatch:
     inputs:
       tickers:
-        description: "Tickers for the live financial analysis (space separated)"
+        description: "Tickers for the live financial analysis and put scan (space separated)"
         default: "GOOGL MSFT AMZN INTC"
+  # Live put scans on weekdays during market hours (cron is UTC). 14:47 UTC is 10:47 ET in
+  # daylight time and 9:47 ET in standard time; 19:47 UTC is 15:47 / 14:47 ET. Both fall inside
+  # the 9:30-16:00 session all year. Exchange holidays are not skipped. Scheduled runs only
+  # do the live analysis and put scan; tests and the build run on pushes.
+  schedule:
+    - cron: "47 14 * * 1-5"
+    - cron: "47 19 * * 1-5"
 
 jobs:
   backend-tests:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +32,7 @@ jobs:
         run: python -m pytest -q
 
   frontend-build:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -103,3 +103,28 @@ jobs:
             reports/options/latest.md
             reports/options/latest.json
           if-no-files-found: ignore
+
+  # Put Desk dashboard data from this run's two reports. The PUTDESK lines in this job's log
+  # are what the scheduled Put Desk update reads.
+  put-desk:
+    needs: [live-analysis, put-signals]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: financial-analysis
+          path: reports/analysis
+      - uses: actions/download-artifact@v4
+        with:
+          name: put-signals
+          path: reports/options
+      - name: Build Put Desk data
+        run: python -m options.putdesk --analysis reports/analysis/analysis.json --scan reports/options/latest.json --out putdesk --print
+      - uses: actions/upload-artifact@v4
+        with:
+          name: put-desk
+          path: putdesk/
